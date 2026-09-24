@@ -119,7 +119,7 @@ def loop(tmp_path):
         "integration_worktree": str(lp.wt("int")),
         "lease": "4h",
         "gate": ["! grep -rq FAIL --include=*.txt ."],
-        "forbid_chars": ["—"],
+        "forbid_chars": ["\u2014"],
         "notify": ["sh", "-c", f'printf "%s\\n" "$1" >> {lp.notify_log}', "notify"],
         "preamble": "Project rules go here.",
         "milestones": [],

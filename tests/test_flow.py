@@ -104,3 +104,15 @@ def test_blocked_result_goes_to_human_with_the_question(loop):
     assert loop.state_of(fid) == "human"
     assert "Which port should it use?" in loop.fragment(fid)[1]
     assert any(fid in n for n in loop.notifications())
+
+
+def test_gate_rejects_forbidden_characters_in_added_lines(loop):
+    fid = loop.add(title="dashy")
+    loop.tick("a")
+    (loop.wt("a") / "prose.md").write_text("a \u2014 b\n")
+    loop.write_result("a", commit="docs: dashy")
+
+    loop.tick("a")
+
+    assert "forbidden characters" in loop.fragment(fid)[1]
+    assert loop.fragment(fid)[0]["attempts"] == 1
