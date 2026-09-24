@@ -290,6 +290,9 @@ def prepare(q, agent_name, frag):
             git(wt, "checkout", "-q", "-b", branch, cfg["base"])
     elif kind == "review":
         git(wt, "checkout", "-q", "--detach", frag.front["branch"])
+    elif kind == "conflict":
+        git(wt, "checkout", "-q", "--detach", cfg["base"])
+        git(wt, "merge", "--squash", frag.front["branch"], check=False)
     else:
         git(wt, "checkout", "-q", "--detach", cfg["base"])
     d = loop_dir(wt)
@@ -357,7 +360,11 @@ def collect(q, agent):
     frag = held[0]
     result = read_result(wt)
     if result is None:
-        return "busy"
+        if dt.datetime.fromisoformat(frag.front["lease_until"]) > now():
+            return "busy"
+        expire(q, frag)
+        start_cooldown(q, agent)
+        return "free"
     front, body = result
     clear_loop_dir(wt)
     kind = frag.front["kind"]
@@ -366,8 +373,34 @@ def collect(q, agent):
         collect_work(q, agent, wt, frag, front, body)
     elif kind == "review":
         collect_review(q, agent, wt, frag, front, body)
+    elif kind == "conflict":
+        collect_conflict(q, agent, wt, frag, front, body)
     git(wt, "checkout", "-q", "--detach")
     return "free"
+
+
+def expire(q, frag):
+    """A claim whose lease ran out without a result: keep partial work."""
+    agent = frag.front["claimed_by"]
+    wt = q.cfg["agents"][agent]["worktree"]
+    clear_loop_dir(wt)
+    kind = frag.front["kind"]
+    if kind in ("work", "conflict"):
+        commit_all(wt, f"wip({frag.id}): partial", frag.id, agent)
+    else:
+        discard(wt)
+    git(wt, "checkout", "-q", "--detach")
+    release(frag)
+    frag.note(f"lease of {agent} expired without a result")
+    q.move(frag, "ready")
+
+
+def expire_others(q, agent):
+    for frag in q.all("claimed"):
+        if frag.front.get("claimed_by") == agent:
+            continue
+        if dt.datetime.fromisoformat(frag.front["lease_until"]) <= now():
+            expire(q, frag)
 
 
 def collect_work(q, agent, wt, frag, front, body):
@@ -389,6 +422,15 @@ def collect_work(q, agent, wt, frag, front, body):
                 "branch": frag.front["branch"],
             }, f"## Goal\nReview {frag.id}.\n")
             return
+        send_back(q, frag, failure)
+    elif status == "blocked":
+        frag.note(f"blocked ({agent}):\n{body.strip()}")
+        q.move(frag, "human")
+        notify(q.cfg, f"{frag.id} is blocked: {frag.front.get('title', '')}")
+    else:  # parked
+        frag.note(f"parked by {agent}:\n{body.strip()}")
+        q.move(frag, "ready")
+        start_cooldown(q, agent)
 
 
 def notify(cfg, message):
@@ -412,6 +454,21 @@ def send_back(q, frag, reason, max_attempts=3):
         q.move(frag, "ready")
 
 
+def start_cooldown(q, agent):
+    spec = q.cfg["agents"][agent]
+    until = now() + parse_duration(spec.get("limit_cooldown", "2h"))
+    (q.root / "cooldown" / agent).write_text(until.isoformat())
+    if spec.get("cooldown_notice"):
+        notify(q.cfg, spec["cooldown_notice"])
+
+
+def in_cooldown(q, agent):
+    path = q.root / "cooldown" / agent
+    if not path.exists():
+        return False
+    return dt.datetime.fromisoformat(path.read_text().strip()) > now()
+
+
 def collect_review(q, agent, wt, frag, front, body):
     discard(wt)
     target = q.get(frag.front["target"])
@@ -424,6 +481,26 @@ def collect_review(q, agent, wt, frag, front, body):
         integrate(q, target)
     else:
         send_back(q, target, f"review by {agent} asked for changes:\n{body.strip()}")
+
+
+def collect_conflict(q, agent, wt, frag, front, body):
+    target = q.get(frag.front["target"])
+    if front.get("status") != "done":
+        discard(wt)
+        frag.note(f"{front.get('status')} by {agent}:\n{body.strip()}")
+        if front.get("status") == "parked":
+            q.move(frag, "ready")
+            start_cooldown(q, agent)
+        else:
+            q.move(frag, "human")
+            notify(q.cfg, f"{frag.id} is blocked: {frag.front.get('title', '')}")
+        return
+    message = front.get("commit") or target.front.get("title", frag.id)
+    commit_all(wt, message, target.id, agent)
+    git(wt, "branch", "-f", frag.front["branch"], "HEAD")
+    frag.note(f"resolved by {agent}")
+    q.move(frag, "done")
+    integrate(q, target)
 
 
 def integrate(q, target):
@@ -478,6 +555,9 @@ def cmd_tick(q, args):
     with q.locked():
         if collect(q, agent) == "busy":
             return 1
+        expire_others(q, agent)
+        if in_cooldown(q, agent):
+            return 1
         frag = pick(q, agent)
         if frag is None:
             return 1
@@ -494,6 +574,18 @@ def cmd_tick(q, args):
     return 0
 
 
+def cmd_cooldown(q, args):
+    path = q.root / "cooldown" / args.agent
+    with q.locked():
+        if args.clear:
+            path.unlink(missing_ok=True)
+        elif args.until:
+            path.write_text(dt.datetime.fromisoformat(args.until).isoformat())
+        else:
+            print(path.read_text().strip() if path.exists() else "none")
+    return 0
+
+
 def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=os.environ.get("LOOPQ_CONFIG"))
@@ -504,12 +596,17 @@ def main(argv=None):
     tick.add_argument("--manual", action="store_true")
     add = sub.add_parser("add", parents=[common])
     add.add_argument("file")
+    cool = sub.add_parser("cooldown", parents=[common])
+    cool.add_argument("--agent", required=True)
+    cool.add_argument("--until")
+    cool.add_argument("--clear", action="store_true")
     args = parser.parse_args(argv)
     if not args.config:
         parser.error("--config or LOOPQ_CONFIG is required")
     cfg = yaml.safe_load(Path(args.config).read_text())
     q = Queue(cfg)
-    return {"tick": cmd_tick, "add": cmd_add}[args.command](q, args)
+    commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown}
+    return commands[args.command](q, args)
 
 
 if __name__ == "__main__":

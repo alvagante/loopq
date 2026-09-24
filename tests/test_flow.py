@@ -76,3 +76,31 @@ def test_review_asking_for_changes_sends_the_work_back_with_findings(loop):
     assert (loop.wt("b") / "feature.txt").exists()
     assert "1. Missing test." in (loop.wt("b") / ".loop" / "FRAGMENT.md").read_text()
     assert "feature.txt" not in git(loop.repo, "ls-tree", "--name-only", "tools").stdout
+
+
+def test_failing_gate_requeues_with_the_failure_and_goes_to_human_after_three(loop):
+    fid = loop.add(title="broken")
+    assert loop.tick("a").returncode == 0
+    for attempt in (1, 2, 3):
+        (loop.wt("a") / "bad.txt").write_text(f"FAIL {attempt}\n")
+        loop.write_result("a", commit="feat: broken")
+        loop.tick("a")  # collects, and re-reserves while attempts remain
+        assert loop.fragment(fid)[0]["attempts"] == attempt
+        if attempt < 3:
+            assert loop.state_of(fid) == "claimed"
+            prompt = (loop.wt("a") / ".loop" / "FRAGMENT.md").read_text()
+            assert "gate command failed" in prompt
+    assert loop.state_of(fid) == "human"
+    assert any(fid in n for n in loop.notifications())
+
+
+def test_blocked_result_goes_to_human_with_the_question(loop):
+    fid = loop.add(title="needs decision")
+    loop.tick("a")
+    loop.write_result("a", status="blocked", body="Which port should it use?")
+
+    assert loop.tick("a").returncode == 1
+
+    assert loop.state_of(fid) == "human"
+    assert "Which port should it use?" in loop.fragment(fid)[1]
+    assert any(fid in n for n in loop.notifications())
