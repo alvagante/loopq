@@ -366,6 +366,7 @@ def collect(q, agent):
         start_cooldown(q, agent)
         return "free"
     front, body = result
+    outs = [Fragment.read(p) for p in sorted((loop_dir(wt) / "out" / "fragments").glob("*.md"))]
     clear_loop_dir(wt)
     kind = frag.front["kind"]
     release(frag)
@@ -375,6 +376,10 @@ def collect(q, agent):
         collect_review(q, agent, wt, frag, front, body)
     elif kind == "conflict":
         collect_conflict(q, agent, wt, frag, front, body)
+    elif kind == "decompose":
+        collect_decompose(q, agent, wt, frag, front, body, outs)
+    elif kind == "brief":
+        collect_brief(q, agent, wt, frag, front, body)
     git(wt, "checkout", "-q", "--detach")
     return "free"
 
@@ -503,6 +508,123 @@ def collect_conflict(q, agent, wt, frag, front, body):
     integrate(q, target)
 
 
+def all_ids(q):
+    return {p.stem for s in STATES for p in (q.root / s).glob("*.md")}
+
+
+def validate_batch(q, outs):
+    names = {o.path.stem for o in outs}
+    known = all_ids(q)
+    errors = []
+    for o in outs:
+        f, name = o.front, o.path.name
+        if not f.get("title"):
+            errors.append(f"{name}: missing title")
+        if f.get("kind") not in ("work", "human"):
+            errors.append(f"{name}: kind must be work or human")
+        if f.get("tier") not in ("judgement", "standard", "mechanical"):
+            errors.append(f"{name}: missing or unknown tier")
+        deps = f.get("deps")
+        if not isinstance(deps, list):
+            errors.append(f"{name}: deps must be a list")
+            continue
+        for d in deps:
+            if d not in names and d not in known:
+                errors.append(f"{name}: unknown dep {d}")
+        if f.get("kind") == "work":
+            for section in ("## Goal", "## Acceptance"):
+                if section not in o.body:
+                    errors.append(f"{name}: missing section {section}")
+    if not outs:
+        errors.append("no fragments written to .loop/out/fragments/")
+    return errors
+
+
+def collect_decompose(q, agent, wt, frag, front, body, outs):
+    discard(wt)
+    if front.get("status") != "done":
+        send_back(q, frag, f"{front.get('status')} by {agent}:\n{body.strip()}")
+        return
+    errors = validate_batch(q, outs)
+    if errors:
+        send_back(q, frag, "invalid decomposition:\n" + "\n".join(errors))
+        return
+    ids = {}
+    for o in outs:
+        ids[o.path.stem] = q.next_id()
+    for o in outs:
+        fr = {k: v for k, v in o.front.items() if k != "id"}
+        fr["deps"] = [ids.get(d, d) for d in fr["deps"]]
+        fr["milestone"] = fr.get("milestone") or frag.front.get("milestone")
+        state = "human" if fr["kind"] == "human" else "ready"
+        new = Fragment(q.root / state / f"{ids[o.path.stem]}.md",
+                       {"id": ids[o.path.stem], "attempts": 0, "claimed_by": None,
+                        "lease_until": None, **fr}, o.body)
+        new.save()
+        if state == "human":
+            notify(q.cfg, f"{new.id} needs you: {fr['title']}")
+    frag.note(f"decomposed by {agent} into {', '.join(ids.values())}")
+    q.move(frag, "done")
+
+
+def collect_brief(q, agent, wt, frag, front, body):
+    discard(wt)
+    if front.get("status") != "done":
+        send_back(q, frag, f"{front.get('status')} by {agent}:\n{body.strip()}")
+        return
+    mid = frag.front.get("milestone")
+    path = q.root / "briefs" / f"{mid}.md"
+    path.write_text(body.strip() + "\n")
+    q.move(frag, "done")
+    notify(q.cfg, f"brief for {mid} is ready: {path}")
+    follow = q.cfg.get("brief_followup")
+    if follow:
+        q.create({
+            "title": follow["title"],
+            "kind": "work",
+            "tier": follow.get("tier", "mechanical"),
+            "milestone": mid,
+        }, f"## Goal\n{follow.get('goal', '')}\n## Read first\n{path}\n"
+           f"## Acceptance\nThe brief is recorded as the goal says.\n")
+
+
+# milestones -------------------------------------------------------------
+
+def milestone_complete(q, mid):
+    frags = [f for f in q.all() if f.front.get("milestone") == mid and f.front["kind"] != "brief"]
+    has_dec = any(f.front["kind"] == "decompose" for f in frags)
+    return has_dec and all(f.state == "done" for f in frags)
+
+
+def milestone_released(q, m):
+    if not milestone_complete(q, m["id"]):
+        return False
+    return not m.get("hold") or (q.root / "acks" / m["id"]).exists()
+
+
+def advance_milestones(q):
+    ms = {m["id"]: m for m in q.cfg.get("milestones") or []}
+    for m in ms.values():
+        frags = [f for f in q.all() if f.front.get("milestone") == m["id"]]
+        kinds = {f.front["kind"] for f in frags}
+        if "decompose" not in kinds:
+            if all(a in ms and milestone_released(q, ms[a]) for a in m.get("after") or []):
+                q.create({
+                    "title": f"Decompose {m['id']}",
+                    "kind": "decompose",
+                    "tier": "judgement",
+                    "milestone": m["id"],
+                }, f"## Goal\nCut {m['id']} into session-sized fragments.\n"
+                   f"## Read first\n{m.get('source', '')}\n")
+        elif "brief" not in kinds and milestone_complete(q, m["id"]):
+            q.create({
+                "title": f"Brief for {m['id']}",
+                "kind": "brief",
+                "tier": "judgement",
+                "milestone": m["id"],
+            }, f"## Goal\nBrief the operator on {m['id']}.\n")
+
+
 def integrate(q, target):
     cfg = q.cfg
     iw = cfg["integration_worktree"]
@@ -556,6 +678,7 @@ def cmd_tick(q, args):
         if collect(q, agent) == "busy":
             return 1
         expire_others(q, agent)
+        advance_milestones(q)
         if in_cooldown(q, agent):
             return 1
         frag = pick(q, agent)
@@ -586,6 +709,24 @@ def cmd_cooldown(q, args):
     return 0
 
 
+def cmd_resolve(q, args):
+    with q.locked():
+        frag = q.get(args.id)
+        if frag is None or frag.state != "human":
+            print(f"loopq: {args.id} is not waiting on a human", file=sys.stderr)
+            return 2
+        frag.note(f"operator: {args.note}" if args.note else "operator resolved")
+        release(frag)
+        q.move(frag, "done" if args.done else "ready")
+    return 0
+
+
+def cmd_ack(q, args):
+    with q.locked():
+        (q.root / "acks" / args.milestone).write_text(now().isoformat())
+    return 0
+
+
 def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=os.environ.get("LOOPQ_CONFIG"))
@@ -600,12 +741,21 @@ def main(argv=None):
     cool.add_argument("--agent", required=True)
     cool.add_argument("--until")
     cool.add_argument("--clear", action="store_true")
+    res = sub.add_parser("resolve", parents=[common])
+    res.add_argument("id")
+    res.add_argument("--note", default="")
+    mode = res.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--done", action="store_true")
+    mode.add_argument("--requeue", action="store_true")
+    ack = sub.add_parser("ack", parents=[common])
+    ack.add_argument("milestone")
     args = parser.parse_args(argv)
     if not args.config:
         parser.error("--config or LOOPQ_CONFIG is required")
     cfg = yaml.safe_load(Path(args.config).read_text())
     q = Queue(cfg)
-    commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown}
+    commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown,
+                "resolve": cmd_resolve, "ack": cmd_ack}
     return commands[args.command](q, args)
 
 
