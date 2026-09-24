@@ -96,10 +96,14 @@ def parse_duration(text):
 
 # git --------------------------------------------------------------------
 
+class GitError(Exception):
+    pass
+
+
 def git(cwd, *args, check=True):
     res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and res.returncode != 0:
-        raise SystemExit(f"loopq: git {' '.join(args)} failed in {cwd}:\n{res.stderr}")
+        raise GitError(f"git {' '.join(args)} failed in {cwd}:\n{(res.stdout + res.stderr).strip()}")
     return res
 
 
@@ -362,12 +366,37 @@ def collect(q, agent):
     if result is None:
         if dt.datetime.fromisoformat(frag.front["lease_until"]) > now():
             return "busy"
-        expire(q, frag)
+        safe_expire(q, frag)
         start_cooldown(q, agent)
         return "free"
     front, body = result
     outs = [Fragment.read(p) for p in sorted((loop_dir(wt) / "out" / "fragments").glob("*.md"))]
+    try:
+        transition(q, agent, wt, frag, front, body, outs)
+    except GitError as err:
+        to_human_on_error(q, agent, [frag.id, frag.front.get("target")], err, body)
     clear_loop_dir(wt)
+    git(wt, "checkout", "-q", "--detach", check=False)
+    return "free"
+
+
+def to_human_on_error(q, agent, ids, err, body=""):
+    """A git or hook failure while handling a fragment: stop and ask."""
+    iw = q.cfg["integration_worktree"]
+    git(iw, "rebase", "--abort", check=False)
+    git(iw, "checkout", "-q", "--detach", check=False)
+    for fid in [i for i in ids if i]:
+        frag = q.get(fid)
+        if frag is None or frag.state in ("done", "human"):
+            continue
+        release(frag)
+        frag.note(f"loopq hit an error handling this for {agent}; the worktree is "
+                  f"left as it was.\n{err}\nAgent result:\n{body.strip()}")
+        q.move(frag, "human")
+        notify(q.cfg, f"{fid} needs you: git error while handling it")
+
+
+def transition(q, agent, wt, frag, front, body, outs):
     kind = frag.front["kind"]
     release(frag)
     if kind == "work":
@@ -380,8 +409,6 @@ def collect(q, agent):
         collect_decompose(q, agent, wt, frag, front, body, outs)
     elif kind == "brief":
         collect_brief(q, agent, wt, frag, front, body)
-    git(wt, "checkout", "-q", "--detach")
-    return "free"
 
 
 def expire(q, frag):
@@ -400,12 +427,20 @@ def expire(q, frag):
     q.move(frag, "ready")
 
 
+def safe_expire(q, frag):
+    agent = frag.front["claimed_by"]
+    try:
+        expire(q, frag)
+    except GitError as err:
+        to_human_on_error(q, agent, [frag.id], err)
+
+
 def expire_others(q, agent):
     for frag in q.all("claimed"):
         if frag.front.get("claimed_by") == agent:
             continue
         if dt.datetime.fromisoformat(frag.front["lease_until"]) <= now():
-            expire(q, frag)
+            safe_expire(q, frag)
 
 
 def collect_work(q, agent, wt, frag, front, body):
