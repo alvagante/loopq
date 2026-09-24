@@ -670,10 +670,32 @@ def cmd_add(q, args):
     return 0
 
 
+AGENT_PROMPT = "Read .loop/FRAGMENT.md in this worktree and follow it exactly."
+
+
+def base_checked_out(cfg):
+    listing = git(cfg["integration_worktree"], "worktree", "list", "--porcelain").stdout
+    return f"branch refs/heads/{cfg['base']}" in listing.splitlines()
+
+
 def cmd_tick(q, args):
     agent = args.agent
     if agent not in q.cfg["agents"]:
         raise SystemExit(f"loopq: unknown agent {agent!r}")
+    if base_checked_out(q.cfg):
+        print(f"loopq: {q.cfg['base']} is checked out in a worktree; "
+              "loopq moves it only while no worktree has it checked out", file=sys.stderr)
+        return 2
+    rc = tick(q, agent)
+    if args.manual:
+        if rc == 0:
+            print(f"worktree: {q.cfg['agents'][agent]['worktree']}\nprompt: {AGENT_PROMPT}")
+        else:
+            print(f"nothing for {agent} now")
+    return rc
+
+
+def tick(q, agent):
     with q.locked():
         if collect(q, agent) == "busy":
             return 1
@@ -706,6 +728,24 @@ def cmd_cooldown(q, args):
             path.write_text(dt.datetime.fromisoformat(args.until).isoformat())
         else:
             print(path.read_text().strip() if path.exists() else "none")
+    return 0
+
+
+def cmd_status(q, args):
+    counts = "  ".join(f"{s} {len(list((q.root / s).glob('*.md')))}" for s in STATES)
+    print(counts)
+    for f in q.all("claimed"):
+        print(f"{f.id} claimed by {f.front['claimed_by']} until {f.front['lease_until']}: "
+              f"{f.front.get('title', '')}")
+    for f in q.all("human"):
+        print(f"{f.id} human: {f.front.get('title', '')}")
+    for p in sorted((q.root / "cooldown").iterdir()):
+        until = dt.datetime.fromisoformat(p.read_text().strip())
+        if until > now():
+            print(f"cooldown {p.name} until {until.isoformat()}")
+    for p in sorted((q.root / "briefs").glob("*.md")):
+        if not (q.root / "acks" / p.stem).exists():
+            print(f"brief {p.stem} unread: {p}")
     return 0
 
 
@@ -747,6 +787,7 @@ def main(argv=None):
     mode = res.add_mutually_exclusive_group(required=True)
     mode.add_argument("--done", action="store_true")
     mode.add_argument("--requeue", action="store_true")
+    sub.add_parser("status", parents=[common])
     ack = sub.add_parser("ack", parents=[common])
     ack.add_argument("milestone")
     args = parser.parse_args(argv)
@@ -755,7 +796,7 @@ def main(argv=None):
     cfg = yaml.safe_load(Path(args.config).read_text())
     q = Queue(cfg)
     commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown,
-                "resolve": cmd_resolve, "ack": cmd_ack}
+                "resolve": cmd_resolve, "ack": cmd_ack, "status": cmd_status}
     return commands[args.command](q, args)
 
 

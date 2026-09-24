@@ -34,3 +34,32 @@ def test_agent_holding_a_live_claim_gets_nothing_more(loop):
     assert res.returncode == 1
     assert loop.state_of(first) == "claimed"
     assert loop.state_of(second) == "ready"
+
+
+def test_tick_refuses_while_the_base_branch_is_checked_out(loop):
+    from conftest import git
+    loop.add(title="x")
+    git(loop.repo, "checkout", "-q", "tools")
+
+    res = loop.tick("a")
+
+    assert res.returncode == 2
+    assert "tools is checked out" in res.stderr
+    assert loop.ids_in("claimed") == []
+
+
+def test_manual_tick_prints_where_to_work_and_what_to_paste(loop):
+    loop.add(title="x")
+
+    res = loop.tick("a", "--manual")
+
+    assert res.returncode == 0
+    assert str(loop.wt("a")) in res.stdout
+    assert "Read .loop/FRAGMENT.md in this worktree and follow it exactly." in res.stdout
+
+
+def test_manual_tick_says_when_there_is_nothing(loop):
+    res = loop.tick("a", "--manual")
+
+    assert res.returncode == 1
+    assert "nothing for a" in res.stdout
