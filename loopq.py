@@ -479,7 +479,9 @@ def promote_humans(q):
     """Notify a human step once, when every dep is done."""
     done = q.done_ids()
     for frag in q.all("human"):
-        if frag.front.get("notified") is False and all(d in done for d in frag.front.get("deps") or []):
+        pending_notice = frag.front.get("notified") is False or (
+            "notified" not in frag.front and frag.front.get("kind") == "human")
+        if pending_notice and all(d in done for d in frag.front.get("deps") or []):
             frag.front["notified"] = True
             frag.save()
             notify(q.cfg, f"{frag.id} needs you: {frag.front.get('title', '')}")
@@ -858,7 +860,13 @@ def cmd_resolve(q, args):
         frag.note(f"operator: {args.note}" if args.note else "operator resolved")
         release(frag)
         frag.front["notified"] = True
-        q.move(frag, "done" if args.done else "ready", "resolved" if args.done else "requeued")
+        if args.done:
+            q.move(frag, "done", "resolved")
+        elif frag.front.get("kind") == "human":
+            frag.save()  # an operator step stays with the operator
+            q.event("noted", frag.id, to="human", detail=args.note)
+        else:
+            q.move(frag, "ready", "requeued")
     return 0
 
 
@@ -956,7 +964,8 @@ def cmd_todo(q, args):
             print(f"      last note: {note.splitlines()[0][:160]}")
         print(f"      read:    cat {frag.path}")
         print(f"      finish:  loopq resolve {frag.id} --done --note \"...\"")
-        print(f"      or send back: loopq retry {frag.id} --note \"...\"")
+        if frag.front.get("kind") != "human":
+            print(f"      or send back: loopq retry {frag.id} --note \"...\"")
     if not now_items:
         print("  nothing")
     print("Waiting on the loop")
@@ -1022,7 +1031,7 @@ def transcript_files(q, s):
         return []
     start = dt.datetime.fromisoformat(s["start"]).timestamp()
     end = dt.datetime.fromisoformat(s["end"]).timestamp() if s["end"] else float("inf")
-    files = [Path(p) for p in glob.glob(os.path.expanduser(pattern))]
+    files = [Path(p) for p in glob.glob(os.path.expanduser(pattern), recursive=True)]
     return sorted(p for p in files if start <= p.stat().st_mtime <= end + 60)
 
 
@@ -1169,6 +1178,10 @@ def cmd_retry(q, args):
         if frag is None or frag.state in ("done", "claimed"):
             print(f"loopq: {args.id} cannot be retried from its state", file=sys.stderr)
             return 2
+        if frag.front.get("kind") == "human":
+            print(f"loopq: {args.id} is an operator step; close it with "
+                  f"`loopq resolve {args.id} --done`", file=sys.stderr)
+            return 2
         frag.front["attempts"] = 0
         frag.note(f"operator retry: {args.note}" if args.note else "operator retry")
         release(frag)
@@ -1240,7 +1253,16 @@ def cmd_run(q, args):
     q.event("exited", frag.id, agent, "claimed", str(code))
     with q.locked():
         q.actor = agent
-        collect(q, agent)
+        wt = spec["worktree"]
+        if code != 0 and read_result(wt) is None:
+            current = q.get(frag.id)
+            if current is not None and current.state == "claimed":
+                current.note(f"{agent} exited {code} without a result; see {log}")
+                current.save()
+                safe_expire(q, current)
+                start_cooldown(q, agent)
+        else:
+            collect(q, agent)
     return code
 
 

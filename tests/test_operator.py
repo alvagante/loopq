@@ -238,14 +238,18 @@ def test_run_does_nothing_without_work(loop):
     assert not (loop.queue / "logs" / "runs").exists() or not list((loop.queue / "logs" / "runs").iterdir())
 
 
-def test_run_records_a_failing_agent_and_leaves_the_claim_for_expiry(loop):
-    use_command(loop, "a", "echo boom >&2; exit 3")
+def test_run_requeues_a_crashed_agent_and_cools_it_down(loop):
+    loop.config["agents"]["a"]["cooldown_notice"] = "a crashed"
+    use_command(loop, "a", "echo boom >&2; echo partial > p.txt; exit 3")
     fid = loop.add(title="crashes")
 
     res = loop.run("run", "--agent", "a")
 
     assert res.returncode == 3
-    assert loop.state_of(fid) == "claimed"
+    assert loop.state_of(fid) == "ready"
+    assert "p.txt" in git(loop.repo, "ls-tree", "--name-only", "loop/tb-0001").stdout
+    assert loop.notifications() == ["a crashed"]
+    assert loop.tick("a").returncode == 1  # cooling down
     out = loop.run("runs", "--failed").stdout
     assert fid in out and "exit 3" in out
 
@@ -287,3 +291,38 @@ def test_malformed_result_goes_to_the_operator_instead_of_crashing_every_tick(lo
     assert "Traceback" not in res.stderr
     assert loop.state_of(fid) == "human"
     assert "RESULT.md" in loop.fragment(fid)[1]
+
+
+def test_human_steps_cannot_be_retried_or_requeued_into_ready(loop):
+    fid = loop.add(title="operator step", kind="human")
+
+    assert loop.run("retry", fid).returncode == 2
+    assert "retry" not in loop.run("todo").stdout
+    loop.run("resolve", fid, "--requeue", "--note", "not yet")
+    assert loop.state_of(fid) == "human"
+
+
+def test_human_steps_from_before_the_notified_field_still_notify(loop):
+    dep = loop.add(title="dep")
+    fid = loop.add(title="old step", kind="human", deps=[dep])
+    path = loop.queue / "human" / f"{fid}.md"
+    path.write_text(path.read_text().replace("notified: false\n", ""))
+    (loop.queue / "ready" / f"{dep}.md").rename(loop.queue / "done" / f"{dep}.md")
+
+    loop.tick("a")
+
+    assert any("old step" in n for n in loop.notifications())
+
+
+def test_session_transcript_globs_may_recurse(loop):
+    tdir = loop.tmp / "sessions" / "2026" / "09" / "25"
+    tdir.mkdir(parents=True)
+    loop.config["agents"]["a"]["transcripts"] = str(loop.tmp / "sessions" / "**" / "*.jsonl")
+    loop.save_config()
+    fid = loop.add(title="deep")
+    loop.tick("a")
+    (tdir / "rollout.jsonl").write_text("deep line\n")
+    stamp = datetime.fromisoformat("2026-09-25T10:05:00+00:00").timestamp()
+    os.utime(tdir / "rollout.jsonl", (stamp, stamp))
+
+    assert "deep line" in loop.run("session", fid).stdout

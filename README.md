@@ -48,9 +48,9 @@ Act:
 | Command | Purpose |
 |---|---|
 | `tick --agent A [--manual]` | Collect A's finished fragment, then reserve the next one. Exit 0 = work reserved, 1 = nothing, 2 = refused. |
-| `run --agent A` | `tick`, then launch A's `command` in its worktree, capture its output to `logs/runs/`, and collect as soon as it exits. Exits 1 without launching while A's previous run is alive. |
+| `run --agent A` | `tick`, then launch A's `command` in its worktree, capture its output to `logs/runs/`, and collect as soon as it exits. A non-zero exit without a result requeues the fragment with its partial work and cools A down. Exits 1 without launching while A's previous run is alive. |
 | `release ID [--note T]` | Drop a claim now: collect it if a result is waiting, otherwise keep partial work and requeue, without a cooldown. |
-| `retry ID [--note T]` | Send a human or ready fragment back to `ready/` with attempts reset. |
+| `retry ID [--note T]` | Send blocked or failed work back to `ready/` with attempts reset. Operator steps (`kind: human`) are closed with `resolve --done` instead; `resolve --requeue` on them only adds the note. |
 | `pause`, `resume` | Stop or restart taking new work; ticks still collect finished results. |
 | `add FILE` | Enqueue a hand-written fragment (`kind: human` goes to `human/`). |
 | `cooldown --agent A [--until ISO\|--clear]` | Show, set or clear a cooldown. |
@@ -66,7 +66,7 @@ loopq is not tied to any harness. Per agent, the config may set:
 agents:
   claude-pro:
     command: ["claude", "-p", "{prompt}"]      # argv or a string; {prompt} {worktree} {id}
-    transcripts: "~/.claude/projects/-Users-al-work-wt-claude/*.jsonl"   # optional
+    transcripts: "~/.claude/projects/-Users-al-work-wt-claude/*.jsonl"   # optional; ** recurses
 ```
 
 - With `command`, schedule `loopq run --agent <name>` from anything (cron,
