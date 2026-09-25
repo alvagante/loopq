@@ -1,3 +1,6 @@
+import re
+
+
 def test_status_shows_counts_claims_cooldowns_human_items_and_briefs(loop):
     loop.add(title="one")
     loop.add(title="two")
@@ -11,8 +14,8 @@ def test_status_shows_counts_claims_cooldowns_human_items_and_briefs(loop):
 
     out = loop.run("status").stdout
 
-    assert "ready 0  claimed 2  review 0  human 1  done 0" in out
-    assert "tb-0001 claimed by a until 2026-09-25T14:00:00+00:00: one" in out
+    assert re.search(r"ready 0\s+\S+ claimed 2\s+\S+ review 0\s+\S+ human 1\s+\S+ done 0", out)
+    assert re.search(r"tb-0001\s+a\s+2026-09-25T14:00:00\+00:00 \(in 4h\)\s+one", out)
     assert "tb-0002 human: two" in out
     assert "cooldown b until 2026-09-25T15:00:00+00:00" in out
     assert "brief m1 unread" in out

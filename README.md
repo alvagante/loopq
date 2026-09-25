@@ -22,6 +22,10 @@ ln -s ~/Documents/GITHUB/loopq/loopq.py ~/.local/bin/loopq
 All take `--config <loop.yaml>` (or `LOOPQ_CONFIG`). The queue lives in
 `$LOOPQ_HOME/<project>/` (default `~/.loops`). Bare `loopq` runs `doctor`.
 
+Output uses [Rich](https://github.com/Textualize/rich): colour, tables and
+rendered fragment Markdown on a terminal; plain text at 220 columns (or
+`COLUMNS`) when piped. `NO_COLOR` and `FORCE_COLOR` are honoured.
+
 What needs me:
 
 | Command | Purpose |
@@ -86,7 +90,7 @@ For example, every 20 minutes from cron:
 ## Tests
 
 ```sh
-uv run --with pytest==9.1.1 --with pyyaml==6.0.3 pytest -q
+uv run --with pytest==9.1.1 --with pyyaml==6.0.3 --with rich==15.0.0 pytest -q
 ```
 
 Tests drive only the command line against a temporary repository, worktrees

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pyyaml==6.0.3"]
+# dependencies = ["pyyaml==6.0.3", "rich==15.0.0"]
 # ///
 """loopq: a local fragment queue that lets several agent budgets pull
 session-sized work, with gates, cross-agent review and integration done by
@@ -21,6 +21,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
+from rich import box
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
 
 STATES = ("ready", "claimed", "review", "human", "done")
 KIND_ORDER = ("conflict", "review", "work", "decompose", "brief")
@@ -833,24 +840,6 @@ def cmd_cooldown(q, args):
     return 0
 
 
-def cmd_status(q, args):
-    counts = "  ".join(f"{s} {len(list((q.root / s).glob('*.md')))}" for s in STATES)
-    print(counts)
-    for f in q.all("claimed"):
-        print(f"{f.id} claimed by {f.front['claimed_by']} until {f.front['lease_until']}: "
-              f"{f.front.get('title', '')}")
-    for f in q.all("human"):
-        print(f"{f.id} human: {f.front.get('title', '')}")
-    for p in sorted((q.root / "cooldown").iterdir()):
-        until = dt.datetime.fromisoformat(p.read_text().strip())
-        if until > now():
-            print(f"cooldown {p.name} until {until.isoformat()}")
-    for p in sorted((q.root / "briefs").glob("*.md")):
-        if not (q.root / "acks" / p.stem).exists():
-            print(f"brief {p.stem} unread: {p}")
-    return 0
-
-
 def cmd_resolve(q, args):
     with q.locked():
         frag = q.get(args.id)
@@ -876,11 +865,103 @@ def cmd_ack(q, args):
     return 0
 
 
-# operator views --------------------------------------------------------
+# rendering --------------------------------------------------------------
 
+STATE_STYLE = {"ready": "cyan", "claimed": "yellow", "review": "magenta",
+               "human": "bold red", "done": "green", "missing": "dim red"}
+KIND_STYLE = {"work": "blue", "review": "magenta", "conflict": "red", "decompose": "cyan",
+              "brief": "green", "human": "bold red"}
+TIER_STYLE = {"judgement": "bold magenta", "standard": "blue", "mechanical": "bright_black"}
+GOOD_EVENTS = {"integrated", "resolved", "resolved-conflict", "gate-passed", "reviewed",
+               "decomposed", "briefed", "created"}
 FAILED_ENDS = {"blocked", "expired", "gate-failed", "gave-up", "error", "changes-asked",
                "invalid-output", "review-unfinished", "base-moved"}
 
+_console = None
+
+
+def console():
+    """Colour on a terminal; plain text, wide enough not to wrap, when piped."""
+    global _console
+    if _console is None:
+        tty = sys.stdout.isatty()
+        _console = Console(highlight=False, emoji=False,
+                           width=None if tty or os.environ.get("COLUMNS") else 220)
+    return _console
+
+
+def ago(ts):
+    if not ts:
+        return ""
+    delta = (now() - dt.datetime.fromisoformat(ts)).total_seconds()
+    future, secs = delta < 0, abs(delta)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= size:
+            amount = f"{int(secs // size)}{unit}"
+            break
+    else:
+        amount = f"{int(secs)}s"
+    return f"in {amount}" if future else f"{amount} ago"
+
+
+def span(start, end):
+    if not end:
+        return ""
+    secs = (dt.datetime.fromisoformat(end) - dt.datetime.fromisoformat(start)).total_seconds()
+    return f"{int(secs // 3600)}h{int(secs % 3600 // 60):02d}m" if secs >= 3600 else f"{int(secs // 60)}m{int(secs % 60):02d}s"
+
+
+def styled(value, table):
+    return Text(str(value), style=table.get(str(value), ""))
+
+
+def event_style(event):
+    if event in FAILED_ENDS:
+        return "red"
+    if event in GOOD_EVENTS:
+        return "green"
+    if event in ("claimed", "launched", "exited"):
+        return "yellow"
+    return "cyan"
+
+
+def counts_text(q):
+    text = Text()
+    for i, s in enumerate(STATES):
+        if i:
+            text.append("  ")
+        n = len(list((q.root / s).glob("*.md")))
+        text.append("● ", style=STATE_STYLE[s] if n else "bright_black")
+        text.append(f"{s} ")
+        text.append(str(n), style=f"bold {STATE_STYLE[s]}" if n else "bright_black")
+    return text
+
+
+def grid():
+    t = Table.grid(padding=(0, 2))
+    t.add_column(style="bright_black", no_wrap=True)
+    t.add_column()
+    return t
+
+
+def plain_table(*columns):
+    t = Table(box=box.SIMPLE_HEAD, header_style="bold", pad_edge=False, show_edge=False)
+    for col in columns:
+        if isinstance(col, tuple):
+            t.add_column(col[0], **col[1])
+        else:
+            t.add_column(col)
+    return t
+
+
+def command(label, cmd):
+    line = Text("    ")
+    line.append(f"{label:<9}", style="bright_black")
+    line.append(cmd, style="cyan")
+    console().print(line, soft_wrap=True)
+
+
+# operator views --------------------------------------------------------
 
 def lease_expired(frag):
     lease = frag.front.get("lease_until")
@@ -902,85 +983,135 @@ def last_note(frag):
     return notes[-1].lstrip("- ").strip() if notes and notes[-1] else ""
 
 
+def cmd_status(q, args):
+    c = console()
+    c.print(counts_text(q))
+    claims = q.all("claimed")
+    if claims:
+        t = plain_table("Claimed", "Agent", "Lease", "Title")
+        for f in claims:
+            lease = f.front["lease_until"]
+            t.add_row(Text(f.id, style="bold"), f.front["claimed_by"],
+                      Text(f"{lease} ({ago(lease)})", style="red" if lease_expired(f) else ""),
+                      Text(f.front.get("title", "")))
+        c.print(t)
+    for f in q.all("human"):
+        c.print(Text.assemble(("▶ ", "bold red"), (f.id, "bold"), " human: ",
+                              f.front.get("title", "")))
+    for p in sorted((q.root / "cooldown").iterdir()):
+        until = dt.datetime.fromisoformat(p.read_text().strip())
+        if until > now():
+            c.print(Text.assemble(("⏸ ", "yellow"), f"cooldown {p.name} until ",
+                                  (until.isoformat(), "yellow"), f" ({ago(until.isoformat())})"))
+    for p in sorted((q.root / "briefs").glob("*.md")):
+        if not (q.root / "acks" / p.stem).exists():
+            c.print(Text.assemble(("✉ ", "green"), f"brief {p.stem} unread: {p}"))
+    return 0
+
+
 def cmd_doctor(q, args):
     """Everything that needs attention, blockers first. Exit 1 when any."""
-    cfg, problems = q.cfg, []
+    cfg, problems = q.cfg, []  # (level, text)
     held = base_checkouts(cfg)
     if held:
-        problems.append(f"BLOCKER {cfg['base']} is checked out in {', '.join(held)}: "
-                        "every tick is refused until you switch that worktree away")
+        refused = [(n, last_tick(q, n)) for n in cfg["agents"]]
+        refused = ", ".join(f"{n} {ago(r['ts'])}" for n, r in refused if r and r["rc"] == 2)
+        problems.append(("blocker", f"{cfg['base']} is checked out in {', '.join(held)}: "
+                                    "every tick is refused until you switch that worktree away"
+                                    + (f" (last refused: {refused})" if refused else "")))
     if (q.root / "paused").exists():
-        problems.append("paused: agents collect but take nothing (loopq resume)")
+        problems.append(("warn", "paused: agents collect but take nothing (loopq resume)"))
     claimed_by = {f.front.get("claimed_by"): f for f in q.all("claimed")}
     for frag in q.all("claimed"):
         if lease_expired(frag):
             agent = frag.front["claimed_by"]
             waiting = read_result(cfg["agents"][agent]["worktree"]) is not None
-            problems.append(f"{frag.id} claimed by {agent}: lease expired at "
-                            f"{frag.front['lease_until']} "
-                            f"({'result waiting' if waiting else 'no result'}); next tick collects it")
+            problems.append(("warn", f"{frag.id} claimed by {agent}: lease expired "
+                                     f"{ago(frag.front['lease_until'])} "
+                                     f"({'result waiting' if waiting else 'no result'}); "
+                                     "next tick collects it"))
     for name, spec in cfg["agents"].items():
         wt = Path(spec["worktree"])
         if not wt.exists():
-            problems.append(f"agent {name}: worktree {wt} is missing")
+            problems.append(("blocker", f"agent {name}: worktree {wt} is missing"))
             continue
         if name not in claimed_by and git(wt, "status", "--porcelain", check=False).stdout.strip():
-            problems.append(f"agent {name}: worktree {wt} is dirty without a claim; ticks will skip it")
-        tick_rec = last_tick(q, name)
-        if tick_rec and tick_rec["rc"] == 2:
-            problems.append(f"agent {name}: last tick refused at {tick_rec['ts']}: {tick_rec['reason']}")
+            problems.append(("warn", f"agent {name}: worktree {wt} is dirty without a claim; "
+                                     "ticks will skip it"))
         if in_cooldown(q, name):
-            problems.append(f"agent {name}: cooling down until "
-                            f"{(q.root / 'cooldown' / name).read_text().strip()}")
+            until = (q.root / "cooldown" / name).read_text().strip()
+            problems.append(("info", f"agent {name}: cooling down until {until} ({ago(until)})"))
     done = q.done_ids()
     actionable = [f for f in q.all("human") if all(d in done for d in f.front.get("deps") or [])]
     if actionable:
-        problems.append(f"{len(actionable)} item(s) need you: loopq todo")
+        problems.append(("you", f"{len(actionable)} item(s) need you: loopq todo"))
     unread = [p.stem for p in sorted((q.root / "briefs").glob("*.md"))
               if not (q.root / "acks" / p.stem).exists()]
     if unread:
-        problems.append(f"unread brief(s): {', '.join(unread)} (loopq todo)")
-    counts = "  ".join(f"{s} {len(list((q.root / s).glob('*.md')))}" for s in STATES)
-    print(counts)
+        problems.append(("you", f"unread brief(s): {', '.join(unread)} (loopq todo)"))
+    c = console()
+    c.print(Rule(Text(f"loopq · {cfg['project']}", style="bold"), align="left"))
+    c.print(counts_text(q))
     if not problems:
-        print("ok")
+        c.print(Text("✔ ok, nothing needs you", style="bold green"))
         return 0
-    for line in problems:
-        print(f"- {line}")
+    marks = {"blocker": ("✖ BLOCKER ", "bold red"), "warn": ("⚠ ", "yellow"),
+             "info": ("ℹ ", "cyan"), "you": ("▶ ", "bold magenta")}
+    order = ["blocker", "warn", "you", "info"]
+    for level, text in sorted(problems, key=lambda p: order.index(p[0])):
+        mark, style = marks[level]
+        line = Text(mark, style=style)
+        line.append(text, style="red" if level == "blocker" else "")
+        c.print(line)
     return 1
 
 
 def cmd_todo(q, args):
-    done = q.done_ids()
+    c = console()
     now_items, waiting = [], []
     for frag in q.all("human"):
         pending = [(d, st) for d, st in dep_states(q, frag) if st != "done"]
         (waiting if pending else now_items).append((frag, pending))
-    print("Do now")
+    c.print(Rule(Text("Do now", style="bold red"), align="left"))
     for frag, _ in now_items:
-        print(f"  {frag.id}  {frag.front.get('title', '')}  ({frag.front.get('kind')})")
+        head = Text("▶ ", style="bold red")
+        head.append(frag.id, style="bold")
+        head.append("  ")
+        head.append(frag.front.get("title", ""), style="bold")
+        head.append(f"  {frag.front.get('kind')}", style=KIND_STYLE.get(frag.front.get("kind"), ""))
+        c.print(head)
         note = last_note(frag)
         if note:
-            print(f"      last note: {note.splitlines()[0][:160]}")
-        print(f"      read:    cat {frag.path}")
-        print(f"      finish:  loopq resolve {frag.id} --done --note \"...\"")
+            c.print(Text(f"    {note.splitlines()[0][:160]}", style="italic bright_black"))
+        command("read", f"cat {frag.path}")
+        command("finish", f'loopq resolve {frag.id} --done --note "..."')
         if frag.front.get("kind") != "human":
-            print(f"      or send back: loopq retry {frag.id} --note \"...\"")
+            command("or", f'loopq retry {frag.id} --note "..."')
     if not now_items:
-        print("  nothing")
-    print("Waiting on the loop")
+        c.print(Text("  nothing", style="bright_black"))
+    c.print(Rule(Text("Waiting on the loop", style="bold yellow"), align="left"))
     for frag, pending in waiting:
-        deps = ", ".join(f"{d} ({st})" for d, st in pending)
-        print(f"  {frag.id}  {frag.front.get('title', '')}  waiting on {deps}")
+        line = Text("⏳ ")
+        line.append(frag.id, style="bold")
+        line.append(f"  {frag.front.get('title', '')}  ")
+        line.append("waiting on ", style="bright_black")
+        for i, (d, st) in enumerate(pending):
+            if i:
+                line.append(", ")
+            line.append(d)
+            line.append(f" ({st})", style=STATE_STYLE.get(st, ""))
+        c.print(line)
     if not waiting:
-        print("  nothing")
-    print("Briefs to read")
+        c.print(Text("  nothing", style="bright_black"))
+    c.print(Rule(Text("Briefs to read", style="bold green"), align="left"))
     unread = [p for p in sorted((q.root / "briefs").glob("*.md"))
               if not (q.root / "acks" / p.stem).exists()]
     for p in unread:
-        print(f"  {p.stem}: cat {p}; then loopq ack {p.stem}")
+        c.print(Text.assemble(("✉ ", "green"), (p.stem, "bold")))
+        command("read", f"cat {p}")
+        command("then", f"loopq ack {p.stem}")
     if not unread:
-        print("  nothing")
+        c.print(Text("  nothing", style="bright_black"))
     return 0
 
 
@@ -1017,11 +1148,17 @@ def cmd_runs(q, args):
     rows = sessions(q, agent=args.agent)
     if args.failed:
         rows = [s for s in rows if session_failed(s)]
+    t = plain_table("Started", "Agent", "Fragment", "Outcome", "Exit", "Took", "Title")
     for s in rows[-args.limit:]:
-        exit_txt = f"exit {s['exit']}" if s["exit"] is not None else ""
         frag = q.get(s["id"])
-        title = frag.front.get("title", "") if frag else ""
-        print(f"{s['start']}  {s['agent']:<12} {s['id']}  {s['outcome']:<14} {exit_txt:<7} {title}")
+        exit_cell = Text("")
+        if s["exit"] is not None:
+            exit_cell = Text(f"exit {s['exit']}", style="green" if s["exit"] == 0 else "bold red")
+        outcome = Text(s["outcome"], style="yellow" if s["outcome"] == "running" else event_style(s["outcome"]))
+        t.add_row(Text(f"{s['start']} ({ago(s['start'])})"), s["agent"], Text(s["id"], style="bold"),
+                  outcome, exit_cell, span(s["start"], s["end"]),
+                  Text(frag.front.get("title", "") if frag else ""))
+    console().print(t if rows else Text("no sessions recorded", style="bright_black"))
     return 0
 
 
@@ -1040,23 +1177,34 @@ def cmd_session(q, args):
     if not found:
         print(f"loopq: no session recorded for {args.id}", file=sys.stderr)
         return 1
+    c = console()
     for s in found:
-        print(f"=== {s['id']} by {s['agent']} from {s['start']} to {s['end'] or 'now'}: {s['outcome']}")
+        title = Text.assemble((s["id"], "bold"), " by ", (s["agent"], "bold"), "  ",
+                              (s["outcome"], event_style(s["outcome"])),
+                              f"  {s['start']} → {s['end'] or 'now'}")
+        c.print(Rule(title, align="left"))
         paths = [Path(s["log"])] if s["log"] else transcript_files(q, s)
         if not paths:
-            print("(no captured output: launch with `loopq run`, or set the agent's `transcripts` glob)")
+            c.print(Text("(no captured output: launch with `loopq run`, or set the agent's "
+                         "`transcripts` glob)", style="bright_black"))
         for path in paths:
-            print(f"--- {path}")
+            c.print(Text(f"--- {path}", style="bright_black"), soft_wrap=True)
             if not args.paths:
-                print(path.read_text(errors="replace"), end="")
+                c.out(path.read_text(errors="replace"), end="", highlight=False)
     return 0
 
 
-def cmd_history(q, args):
+def history_table(q, fid):
+    t = plain_table("When", "Event", "To", "By", "Detail")
     for e in q.events():
-        if e["id"] == args.id:
-            detail = f"  {e['detail']}" if e["detail"] else ""
-            print(f"{e['ts']}  {e['event']:<14} -> {e['to'] or '':<8} {e['agent']}{detail}")
+        if e["id"] == fid:
+            t.add_row(Text(f"{e['ts']} ({ago(e['ts'])})"), Text(e["event"], style=event_style(e["event"])),
+                      styled(e["to"] or "", STATE_STYLE), e["agent"] or "", Text(e["detail"] or ""))
+    return t
+
+
+def cmd_history(q, args):
+    console().print(history_table(q, args.id))
     return 0
 
 
@@ -1065,26 +1213,31 @@ def cmd_show(q, args):
     if frag is None:
         print(f"loopq: no fragment {args.id}", file=sys.stderr)
         return 2
-    print(f"{frag.id}: {frag.front.get('title', '')}")
-    print(f"state: {frag.state}   file: {frag.path}")
+    c, f = console(), frag.front
+    info = grid()
+    info.add_row("state", styled(frag.state, STATE_STYLE))
+    info.add_row("kind", styled(f.get("kind", ""), KIND_STYLE))
+    info.add_row("tier", styled(f.get("tier", ""), TIER_STYLE))
+    for key in ("milestone", "branch", "target", "author", "attempts", "claimed_by", "lease_until"):
+        if f.get(key) not in (None, "", 0):
+            info.add_row(key, Text(str(f[key])))
+    info.add_row("file", Text(str(frag.path), style="bright_black"))
     for d, st in dep_states(q, frag):
-        print(f"dep: {d} {st}")
-    iw = q.cfg["integration_worktree"]
-    base = q.cfg["base"]
+        info.add_row("dep", Text.assemble((d, "bold"), "  ", (st, STATE_STYLE.get(st, ""))))
+    iw, base = q.cfg["integration_worktree"], q.cfg["base"]
     merged = git(iw, "log", base, f"--grep=Loop-Fragment: {frag.id}", "--format=%h %s", check=False).stdout
-    if merged.strip():
-        print(f"integrated into {base}:")
-        print("".join(f"  {l}\n" for l in merged.splitlines()), end="")
-    branch = frag.front.get("branch")
+    for line in merged.splitlines():
+        info.add_row(f"in {base}", Text(line, style="green"))
+    branch = f.get("branch")
     if branch and frag.state != "done" and branch_exists(iw, branch):
         pending = git(iw, "log", f"{base}..{branch}", "--format=%h %s", check=False).stdout
-        if pending.strip():
-            print(f"on {branch}, not yet in {base}:")
-            print("".join(f"  {l}\n" for l in pending.splitlines()), end="")
-    print()
-    print(frag.text())
-    print("history:")
-    cmd_history(q, args)
+        for line in pending.splitlines():
+            info.add_row("pending", Text(line, style="yellow"))
+    c.print(Panel(info, title=Text(f"{frag.id} · {f.get('title', '')}", style="bold"),
+                  title_align="left", border_style=STATE_STYLE.get(frag.state, "")))
+    c.print(Markdown(frag.body))
+    c.print(Rule(Text("history", style="bold"), align="left"))
+    c.print(history_table(q, frag.id))
     return 0
 
 
@@ -1108,46 +1261,71 @@ def cmd_why(q, args):
     agent = args.agent
     if agent not in q.cfg["agents"]:
         raise SystemExit(f"loopq: unknown agent {agent!r}")
+    c = console()
     for f in q.all("claimed"):
         if f.front.get("claimed_by") == agent:
-            state = "lease expired" if lease_expired(f) else f"until {f.front['lease_until']}"
-            print(f"busy: holds {f.id} ({state})")
+            state = f"lease expired {ago(f.front['lease_until'])}" if lease_expired(f) \
+                else f"lease ends {ago(f.front['lease_until'])}"
+            c.print(Text.assemble(("● busy ", "yellow"), f"holds ", (f.id, "bold"), f" ({state})"))
     held = base_checkouts(q.cfg)
     if held:
-        print(f"refused: {q.cfg['base']} is checked out in {', '.join(held)}")
+        c.print(Text(f"✖ refused: {q.cfg['base']} is checked out in {', '.join(held)}", style="bold red"))
     if (q.root / "paused").exists():
-        print("paused")
+        c.print(Text("⏸ paused", style="yellow"))
     if in_cooldown(q, agent):
-        print(f"cooldown until {(q.root / 'cooldown' / agent).read_text().strip()}")
+        until = (q.root / "cooldown" / agent).read_text().strip()
+        c.print(Text(f"⏸ cooldown until {until} ({ago(until)})", style="yellow"))
     done = q.done_ids()
     ready = q.all("ready")
     if not ready:
-        print("no ready fragments")
+        c.print(Text("no ready fragments", style="bright_black"))
+        return 0
+    t = plain_table("Ready", "Kind", "Tier", "Title", "For " + agent)
     for frag in ready:
         reasons = why_not(q, agent, frag, done)
-        verdict = "not for it: " + "; ".join(reasons) if reasons else "eligible"
-        print(f"{frag.id}  {frag.front.get('title', '')}  {verdict}")
+        verdict = Text("✔ eligible", style="bold green") if not reasons \
+            else Text("not for it: " + "; ".join(reasons), style="red")
+        t.add_row(Text(frag.id, style="bold"), styled(frag.front.get("kind", ""), KIND_STYLE),
+                  styled(frag.front.get("tier", ""), TIER_STYLE), Text(frag.front.get("title", "")), verdict)
+    c.print(t)
     return 0
+
+
+def progress_bar(done, total, width=12):
+    if not total:
+        return Text("─" * width, style="bright_black")
+    filled = round(width * done / total)
+    return Text.assemble(("█" * filled, "green"), ("░" * (width - filled), "bright_black"),
+                         f" {done}/{total}")
 
 
 def cmd_milestones(q, args):
     ms = {m["id"]: m for m in q.cfg.get("milestones") or []}
+    t = plain_table("Milestone", "Status", "Progress", "States")
     for m in ms.values():
         frags = [f for f in q.all() if f.front.get("milestone") == m["id"]]
         counts = {}
         for f in frags:
             counts[f.state] = counts.get(f.state, 0) + 1
         if milestone_complete(q, m["id"]):
-            status = "complete"
+            status = Text("complete", style="bold green")
             if m.get("hold") and not (q.root / "acks" / m["id"]).exists():
-                status += ", held until loopq ack " + m["id"]
+                status.append(", held until loopq ack " + m["id"], style="yellow")
         elif not frags:
             waiting = [a for a in m.get("after") or [] if not (a in ms and milestone_released(q, ms[a]))]
-            status = "waiting on " + ", ".join(waiting) if waiting else "starts at the next tick"
+            names = ", ".join(waiting) if len(waiting) <= 3 else f"{len(waiting)} milestones"
+            status = Text("waiting on " + names, style="bright_black") if waiting \
+                else Text("starts at the next tick", style="cyan")
         else:
-            status = "in progress"
-        count_txt = "  ".join(f"{s} {counts[s]}" for s in STATES if s in counts)
-        print(f"{m['id']:<12} {status:<28} {count_txt}")
+            status = Text("in progress", style="yellow")
+        states = Text()
+        for s in STATES:
+            if s in counts:
+                if states:
+                    states.append("  ")
+                states.append(f"{s} {counts[s]}", style=STATE_STYLE[s])
+        t.add_row(Text(m["id"], style="bold"), status, progress_bar(counts.get("done", 0), len(frags)), states)
+    console().print(t)
     return 0
 
 

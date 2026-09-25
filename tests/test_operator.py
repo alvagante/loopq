@@ -3,6 +3,7 @@ the provider-agnostic launcher."""
 
 import json
 import os
+import re
 from datetime import datetime
 
 import yaml
@@ -38,9 +39,9 @@ def test_history_lists_every_transition_of_a_fragment(loop):
     out = loop.run("history", fid).stdout
 
     lines = out.strip().splitlines()
-    assert "created" in lines[0] and "ready" in lines[0]
-    assert any("claimed" in l and "a" in l for l in lines)
-    assert "human" in lines[-1] and "blocked" in lines[-1]
+    assert re.search(r"created\s+ready", lines[2])
+    assert re.search(r"claimed\s+claimed\s+a", out)
+    assert re.search(r"blocked\s+human", lines[-1])
     events = [json.loads(l) for l in (loop.queue / "logs" / "events.jsonl").read_text().splitlines()]
     assert {e["id"] for e in events} >= {fid}
 
@@ -127,10 +128,10 @@ def test_show_prints_fragment_dependencies_and_integrated_commits(loop):
     loop.tick("b")
 
     out = loop.run("show", dep).stdout
-    assert "state: done" in out and "feat: first" in out
+    assert re.search(r"state\s+done", out) and "feat: first" in out
 
     out = loop.run("show", fid).stdout
-    assert "second" in out and f"{dep} done" in out
+    assert "second" in out and re.search(rf"{dep}\s+done", out)
 
 
 def test_why_explains_what_keeps_an_agent_idle(loop):
@@ -326,3 +327,28 @@ def test_session_transcript_globs_may_recurse(loop):
     os.utime(tdir / "rollout.jsonl", (stamp, stamp))
 
     assert "deep line" in loop.run("session", fid).stdout
+
+
+def test_doctor_folds_refusals_into_the_blocker_and_drops_them_once_it_clears(loop):
+    git(loop.repo, "checkout", "-q", "tools")
+    loop.tick("a")
+    loop.tick("b")
+
+    out = loop.run("doctor").stdout
+    flat = " ".join(out.split())
+    assert flat.count("last refused:") == 1 and "a 0s ago, b 0s ago" in flat
+    assert "agent a:" not in flat
+
+    git(loop.repo, "checkout", "-q", "main")
+    res = loop.run("doctor")
+    assert res.returncode == 0 and "refused" not in res.stdout
+
+
+def test_milestones_shortens_long_waiting_lists(loop):
+    loop.config["milestones"] = [{"id": f"m{i}", "source": "p", "after": []} for i in range(5)]
+    loop.config["milestones"].append({"id": "last", "source": "p", "after": [f"m{i}" for i in range(5)]})
+    loop.save_config()
+
+    out = loop.run("milestones").stdout
+
+    assert "waiting on 5 milestones" in out
