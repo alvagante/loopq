@@ -2,6 +2,29 @@
 
 Notable user-visible changes are recorded here.
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- `handoff ID [--to AGENT] [--note TEXT]` moves a claim away from an agent
+  stuck on usage limits. It stops the agent's `run` session, keeps partial
+  work on the fragment branch, cools the agent down and requeues the fragment,
+  optionally for one named agent.
+- Command reference in `docs/commands.md` and a recorded demo in the README.
+
+### Fixed
+
+- `run` starts the agent with no standard input, so a harness that prompts at
+  startup (such as the Ollama model picker for OpenCode) fails and requeues
+  instead of holding its claim until the lease ends.
+- A `run` session that exits after its fragment was handed to another agent no
+  longer expires that agent's claim.
+
+### Documentation
+
+- Model selection for harnesses that prompt at startup, with an OpenCode
+  through Ollama example, and why an Orca automation cannot pass a model.
+
 ## [0.1.0] - 2026-09-26
 
 ### Added

@@ -16,8 +16,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -259,6 +261,8 @@ def eligible(cfg, agent_name, frag, done):
         return False
     if f.get("kind") == "review" and f.get("author") == agent_name:
         return False
+    if f.get("assigned_to") not in (None, agent_name):
+        return False
     return True
 
 
@@ -266,6 +270,7 @@ def pick(q, agent_name):
     done = q.done_ids()
     cands = [f for f in q.all("ready") if eligible(q.cfg, agent_name, f, done)]
     cands.sort(key=lambda f: (
+        f.front.get("assigned_to") != agent_name,
         KIND_ORDER.index(f.front["kind"]) if f.front["kind"] in KIND_ORDER else 99,
         milestone_rank(q.cfg, f.front.get("milestone")),
         f.id,
@@ -452,7 +457,7 @@ def transition(q, agent, wt, frag, front, body, outs):
         collect_brief(q, agent, wt, frag, front, body)
 
 
-def expire(q, frag):
+def expire(q, frag, why="expired", reason=None):
     """A claim whose lease ran out without a result: keep partial work."""
     agent = frag.front["claimed_by"]
     wt = q.cfg["agents"][agent]["worktree"]
@@ -464,8 +469,8 @@ def expire(q, frag):
         discard(wt)
     git(wt, "checkout", "-q", "--detach")
     release(frag)
-    frag.note(f"lease of {agent} expired without a result")
-    q.move(frag, "ready", "expired", agent)
+    frag.note(reason or f"lease of {agent} expired without a result")
+    q.move(frag, "ready", why, agent)
 
 
 def safe_expire(q, frag):
@@ -834,6 +839,7 @@ def tick(q, agent):
         if frag is None:
             return 1
         frag.front["claimed_by"] = agent
+        frag.front.pop("assigned_to", None)
         lease = parse_duration(q.cfg.get("lease", "4h"))
         frag.front["lease_until"] = (now() + lease).isoformat()
         if not prepare(q, agent, frag):
@@ -1301,6 +1307,8 @@ def why_not(q, agent, frag, done):
         reasons.append("deps " + ", ".join(missing))
     if f.get("kind") == "review" and f.get("author") == agent:
         reasons.append("own work")
+    if f.get("assigned_to") not in (None, agent):
+        reasons.append(f"handed to {f['assigned_to']}")
     return reasons
 
 
@@ -1413,8 +1421,87 @@ def cmd_retry(q, args):
             frag.note(f"operator: tier {frag.front.get('tier')} -> {args.tier}")
             frag.front["tier"] = args.tier
         frag.note(f"operator retry: {args.note}" if args.note else "operator retry")
+        frag.front.pop("assigned_to", None)
         release(frag)
         q.move(frag, "ready", "retried")
+    return 0
+
+
+def stop_run(q, agent, wait=10):
+    """Stop the `loopq run` session of an agent; False when it has none."""
+    pidfile = q.root / "logs" / f"{agent}.pid"
+    if not pid_alive(pidfile):
+        return False
+    pid = int(pidfile.read_text().strip())
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + wait
+        while pid_alive(pidfile) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if not pid_alive(pidfile):
+            return True
+    raise SystemExit(f"loopq: could not stop the {agent} session (pid {pid})")
+
+
+def cmd_handoff(q, args):
+    agents = q.cfg["agents"]
+    with q.locked():
+        frag = q.get(args.id)
+        if frag is None or frag.state not in ("claimed", "ready"):
+            print(f"loopq: {args.id} is not claimed or ready", file=sys.stderr)
+            return 2
+        source = frag.front.get("claimed_by")
+        if source is None and args.to is None:
+            print(f"loopq: {args.id} is not claimed; name the next agent with --to",
+                  file=sys.stderr)
+            return 2
+        if args.to is not None:
+            if args.to not in agents:
+                print(f"loopq: unknown agent {args.to!r}", file=sys.stderr)
+                return 2
+            if args.to == source:
+                print(f"loopq: {args.id} is already claimed by {source}", file=sys.stderr)
+                return 2
+            frag.front.pop("assigned_to", None)
+            reasons = why_not(q, args.to, frag, q.done_ids() | set(frag.front.get("deps") or []))
+            if reasons:
+                print(f"loopq: {args.to} cannot take {args.id}: {'; '.join(reasons)}",
+                      file=sys.stderr)
+                return 2
+            if in_cooldown(q, args.to):
+                print(f"loopq: {args.to} is cooling down; clear it with "
+                      f"`loopq cooldown --agent {args.to} --clear`", file=sys.stderr)
+                return 2
+        if source is not None:
+            if not stop_run(q, source):
+                print(f"loopq: no `loopq run` session for {source}; stop its agent "
+                      "yourself if it is still open", file=sys.stderr)
+            if read_result(agents[source]["worktree"]) is not None:
+                collect(q, source)
+                print(f"loopq: {source} had finished {args.id}; collected its result")
+                return 0
+            target = args.to or "any other agent"
+            reason = f"handed off from {source} to {target}"
+            if args.note:
+                reason += f": {args.note}"
+            try:
+                expire(q, frag, "handed-off", reason)
+            except GitError as err:
+                to_human_on_error(q, source, [frag.id], err)
+                return 1
+            start_cooldown(q, source)
+        else:
+            frag.note(f"handed to {args.to}" + (f": {args.note}" if args.note else ""))
+        if args.to is not None:
+            frag.front["assigned_to"] = args.to
+            frag.save()
+            if source is None:
+                q.event("handed-off", frag.id, to="ready", detail=args.to)
+            print(f"{args.id} is waiting for {args.to}; `loopq run --agent {args.to}` "
+                  "starts it now")
     return 0
 
 
@@ -1472,7 +1559,8 @@ def cmd_run(q, args):
     q.event("launched", frag.id, agent, "claimed", str(log))
     timeout = parse_duration(q.cfg.get("lease", "4h")).total_seconds()
     with open(log, "w") as out:
-        proc = subprocess.Popen(argv, cwd=spec["worktree"], stdout=out, stderr=subprocess.STDOUT,
+        proc = subprocess.Popen(argv, cwd=spec["worktree"], stdin=subprocess.DEVNULL,
+                                stdout=out, stderr=subprocess.STDOUT,
                                 env={**os.environ, "LOOPQ_FRAGMENT": frag.id, "LOOPQ_AGENT": agent})
         pidfile.write_text(str(proc.pid))
         try:
@@ -1488,7 +1576,8 @@ def cmd_run(q, args):
         wt = spec["worktree"]
         if code != 0 and read_result(wt) is None:
             current = q.get(frag.id)
-            if current is not None and current.state == "claimed":
+            if current is not None and current.state == "claimed" and \
+                    current.front.get("claimed_by") == agent:
                 current.note(f"{agent} exited {code} without a result; see {log}")
                 current.save()
                 safe_expire(q, current)
@@ -1737,6 +1826,7 @@ HELP_GROUPS = (
         ("run", "run --agent A", "Tick, launch the agent command and collect its result."),
         ("dispatch", "dispatch [--dry-run]", "Drive scheduled agents across all loops."),
         ("release", "release ID", "Release a claim while keeping partial work."),
+        ("handoff", "handoff ID [--to A]", "Move a stuck claim to another agent."),
         ("retry", "retry ID [--tier T]", "Return blocked work to the ready queue."),
         ("pause", "pause", "Stop new claims while still collecting results."),
         ("resume", "resume", "Allow new claims again."),
@@ -1837,6 +1927,11 @@ def main(argv=None):
         if name == "retry":
             p.add_argument("--tier", choices=("judgement", "standard", "mechanical"),
                            help="move the fragment to another tier")
+    handoff = sub.add_parser("handoff", parents=[common], help=COMMAND_HELP["handoff"])
+    handoff.add_argument("id", help="fragment ID")
+    handoff.add_argument("--to", metavar="AGENT",
+                         help="agent that takes the fragment next (default: any other agent)")
+    handoff.add_argument("--note", default="", metavar="TEXT", help="record an operator note")
     sub.add_parser("pause", parents=[common], help=COMMAND_HELP["pause"])
     sub.add_parser("resume", parents=[common], help=COMMAND_HELP["resume"])
     run = sub.add_parser("run", parents=[common], help=COMMAND_HELP["run"])
@@ -1933,7 +2028,7 @@ def main(argv=None):
                 "doctor": cmd_doctor, "todo": cmd_todo, "milestones": cmd_milestones,
                 "show": cmd_show, "history": cmd_history, "why": cmd_why,
                 "runs": cmd_runs, "session": cmd_session, "release": cmd_release,
-                "retry": cmd_retry, "pause": cmd_pause, "resume": cmd_resume,
+                "retry": cmd_retry, "handoff": cmd_handoff, "pause": cmd_pause, "resume": cmd_resume,
                 "run": cmd_run}
     return commands[args.command or "doctor"](q, args)
 

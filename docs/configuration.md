@@ -37,7 +37,7 @@ Optional settings:
 |---|---|
 | `agents.NAME.command` | Command run by `loopq run`; argv list or shell-style string. `{prompt}`, `{worktree}`, `{id}` and `{model}` are substituted in each argument. Using `{model}` requires `agents.NAME.model`. |
 | `agents.NAME.transcripts` | Optional glob for transcripts used by `loopq session` when another launcher runs the agent. |
-| `agents.NAME.limit_cooldown` | Cooldown after a parked or failed session, for example `2h`. |
+| `agents.NAME.limit_cooldown` | Cooldown after a parked, failed, or handed-off session, for example `2h`. |
 | `agents.NAME.cron` | Optional five-field numeric cron schedule, interpreted in the cron host's local time by `dispatch`. |
 | `agents.NAME.launcher: orca` | Trigger an existing Orca automation through the Orca CLI when `cron` is due. Its precheck must call `loopq tick` for this agent and config. |
 | `gate` | List of shell commands run in the worktree after work and before integration. Nonzero exit blocks progress. `{base}` is substituted. |
@@ -66,6 +66,29 @@ scheduler starts agents itself, use `loopq tick --agent NAME` as its precheck.
 For a CLI with a model option, set `model` and include `{model}` in that
 option's argument. With a manual or external launcher, `model` records the
 intended choice but does not change the harness automatically.
+
+`loopq run` gives the agent no standard input. A harness that stops to ask
+something, such as a model picker, exits instead of holding the claim until
+the lease ends; the fragment is requeued and the agent cools down. Pass every
+choice on the command line. For example, OpenCode started through Ollama
+needs `--model`, and `run` makes it work without the TUI:
+
+```yaml
+  opencode:
+    worktree: /absolute/path/project-loop-opencode
+    model: qwen3.8:latest
+    tiers: [mechanical]
+    kinds: [work]
+    command: ["ollama", "launch", "opencode", "-y", "--model", "{model}",
+              "--", "run", "{prompt}"]
+    cron: "15,35,55 * * * *"
+```
+
+An Orca automation has no model option. Orca starts OpenCode with
+`ollama launch opencode -y`, which opens Ollama's model picker and waits there
+until someone answers it. Run such an agent with `command` as above instead of
+`launcher: orca`. If a session is already stuck, `loopq handoff ID` stops a
+`run` session and requeues its work; close an Orca session yourself.
 
 ## One cron job for all loops
 

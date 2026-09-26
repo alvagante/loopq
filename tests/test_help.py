@@ -20,7 +20,7 @@ def test_help_and_dash_h_show_every_command_without_a_config():
     assert overview.stdout == short.stdout
     for name in ("help", "loops", "doctor", "todo", "status", "milestones",
                  "show", "history", "why", "runs", "session", "add", "tick",
-                 "run", "dispatch", "release", "retry", "resolve", "ack",
+                 "run", "dispatch", "release", "handoff", "retry", "resolve", "ack",
                  "pause", "resume", "cooldown"):
         assert name in overview.stdout
     assert "--loop NAME" in overview.stdout

@@ -4,11 +4,14 @@ the provider-agnostic launcher."""
 import json
 import os
 import re
+import subprocess
+import sys
+import time
 from datetime import datetime
 
 import yaml
 
-from conftest import git
+from conftest import LOOPQ, git
 from test_milestones import with_milestones, write_out
 
 LATER = "2026-09-25T14:01:00+00:00"
@@ -174,6 +177,73 @@ def test_release_returns_a_claim_without_cooling_the_agent(loop):
     assert loop.tick("a").returncode == 0
 
 
+def test_handoff_keeps_partial_work_cools_the_holder_and_waits_for_the_target(loop):
+    fid = loop.add(title="hit limits")
+    loop.tick("a")
+    (loop.wt("a") / "partial.txt").write_text("half\n")
+
+    res = loop.run("handoff", fid, "--to", "b", "--note", "a hit its usage limit")
+
+    assert res.returncode == 0, res.stderr
+    front, body = loop.fragment(fid)
+    assert loop.state_of(fid) == "ready" and front["assigned_to"] == "b"
+    assert "handed off from a to b: a hit its usage limit" in body
+    assert loop.tick("a").returncode == 1  # cooling down
+    loop.run("cooldown", "--agent", "a", "--clear")
+    assert loop.tick("a").returncode == 1  # waiting for b
+    assert "handed to b" in loop.run("why", "a").stdout
+    assert loop.tick("b").returncode == 0
+    assert (loop.wt("b") / "partial.txt").read_text() == "half\n"
+    assert "assigned_to" not in loop.fragment(fid)[0]
+
+
+def test_handoff_without_target_lets_any_other_agent_take_it(loop):
+    fid = loop.add(title="hit limits")
+    loop.tick("a")
+
+    assert loop.run("handoff", fid).returncode == 0
+
+    assert loop.tick("a").returncode == 1
+    assert loop.tick("b").returncode == 0
+
+
+def test_handoff_refuses_the_holder_an_ineligible_agent_and_a_cooling_one(loop):
+    fid = loop.add(title="judgement call", tier="judgement")
+    loop.tick("a")
+    loop.config["agents"]["b"]["tiers"] = ["mechanical"]
+    loop.save_config()
+
+    assert loop.run("handoff", fid, "--to", "a").returncode == 2
+    assert "tier judgement" in loop.run("handoff", fid, "--to", "b").stderr
+    loop.config["agents"]["b"]["tiers"] = ["judgement"]
+    loop.save_config()
+    loop.run("cooldown", "--agent", "b", "--until", "2099-01-01T00:00:00+00:00")
+    assert "cooling down" in loop.run("handoff", fid, "--to", "b").stderr
+    assert loop.state_of(fid) == "claimed"
+
+
+def test_handoff_stops_a_stuck_run_and_keeps_its_work(loop):
+    use_command(loop, "a", "echo partial > p.txt; exec sleep 60")
+    fid = loop.add(title="stuck on limits")
+    env = {**os.environ, "LOOPQ_HOME": str(loop.home), "LOOPQ_NOW": loop.now}
+    run = subprocess.Popen([sys.executable, str(LOOPQ), "run", "--agent", "a",
+                            "--config", str(loop.config_path)], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pidfile = loop.queue / "logs" / "a.pid"
+    deadline = time.monotonic() + 10
+    while not ((loop.wt("a") / "p.txt").exists() and pidfile.exists()):
+        assert time.monotonic() < deadline, "agent did not start"
+        time.sleep(0.05)
+
+    res = loop.run("handoff", fid, "--to", "b")
+
+    assert res.returncode == 0, res.stderr
+    assert run.wait(timeout=10) != 0
+    assert loop.state_of(fid) == "ready"
+    assert loop.fragment(fid)[0]["assigned_to"] == "b"
+    assert "p.txt" in git(loop.repo, "ls-tree", "--name-only", f"loop/{fid}").stdout
+
+
 def test_retry_resets_attempts_and_requeues(loop):
     fid = loop.add(title="flaky")
     for _ in range(3):
@@ -278,6 +348,21 @@ def test_run_requeues_a_crashed_agent_and_cools_it_down(loop):
     assert loop.tick("a").returncode == 1  # cooling down
     out = loop.run("runs", "--failed").stdout
     assert fid in out and "exit 3" in out
+
+
+def test_run_gives_the_agent_no_input_so_a_prompt_fails_instead_of_hanging(loop):
+    use_command(loop, "a", "read answer || exit 7; echo got $answer > p.txt")
+    fid = loop.add(title="asks a question")
+
+    env = {**os.environ, "LOOPQ_HOME": str(loop.home), "LOOPQ_NOW": loop.now}
+    run = subprocess.Popen([sys.executable, str(LOOPQ), "run", "--agent", "a",
+                            "--config", str(loop.config_path)], env=env,
+                           stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+
+    assert run.wait(timeout=20) == 7  # an open, silent stdin would hang here
+    run.stdin.close()
+    assert loop.state_of(fid) == "ready"
 
 
 def test_runs_and_session_cover_both_launchers(loop):

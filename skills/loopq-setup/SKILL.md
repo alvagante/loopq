@@ -47,6 +47,10 @@ gate, and each agent's `worktree`, `model`, `tiers`, and `kinds`. Valid tiers ar
 `tick --manual`; command runners receive it only when their `command` uses
 `{model}`. Verify the harness's CLI syntax before adding a `command`. An
 external automation selects its model in that harness, not through loopq.
+A command runs without standard input, so it must pass every choice as an
+argument. When a harness prompts for a model at startup, as OpenCode does
+under `ollama launch` (and so under Orca), use `command` with `{model}`
+rather than an Orca automation; see the configuration reference.
 
 Explain the effect of the proposed commands and config. Get explicit approval
 for installation and Git workspace creation, and approval of the exact YAML

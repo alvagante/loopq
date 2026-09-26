@@ -4,12 +4,13 @@
 
 loopq is a single Python script run with uv. It discovers project configs in
 `~/.config/loopq/loops.d/` and keeps queue state under `~/.loops/` by default.
-It does not require a hosted service. The first public release is `0.1.0`.
+It does not require a hosted service. The current release is `0.2.0`.
 
 ## Use loopq
 
-- [README](https://raw.githubusercontent.com/alvagante/loopq/main/README.md): What loopq does, installation, commands, and agent launch modes.
+- [README](https://raw.githubusercontent.com/alvagante/loopq/main/README.md): What loopq does, installation, and common workflows.
 - [Quickstart](https://raw.githubusercontent.com/alvagante/loopq/main/docs/quickstart.md): Create a loop and run a manual author and reviewer cycle.
+- [Commands](https://raw.githubusercontent.com/alvagante/loopq/main/docs/commands.md): All commands, selection rules, and options.
 - [Configuration](https://raw.githubusercontent.com/alvagante/loopq/main/docs/configuration.md): YAML fields, models, runners, dispatcher, and cron setup.
 - [Setup skill](https://raw.githubusercontent.com/alvagante/loopq/main/skills/loopq-setup/SKILL.md): Agent-guided project setup with reviewable changes and approvals.
 
