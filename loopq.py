@@ -499,6 +499,14 @@ def promote_humans(q):
             notify(q.cfg, f"{frag.id} needs you: {frag.front.get('title', '')}")
 
 
+def review_body(target):
+    """The review stub plus the target's own spec, so the reviewer judges
+    against the same Goal, Files and Acceptance the author worked to."""
+    spec = target.body.split("## Notes")[0].strip()
+    return (f"## Goal\nReview {target.id} against its spec below.\n\n"
+            f"## Spec of {target.id}\n\n{spec}\n")
+
+
 def collect_work(q, agent, wt, frag, front, body):
     status = front.get("status")
     message = front.get("commit") or f"wip({frag.id}): {frag.front.get('title', '')}"
@@ -516,7 +524,7 @@ def collect_work(q, agent, wt, frag, front, body):
                 "target": frag.id,
                 "author": agent,
                 "branch": frag.front["branch"],
-            }, f"## Goal\nReview {frag.id}.\n")
+            }, review_body(frag))
             return
         send_back(q, frag, failure, why="gate-failed", agent=agent)
     elif status == "blocked":
@@ -1000,9 +1008,15 @@ def cmd_status(q, args):
                       Text(f"{lease} ({ago(lease)})", style="red" if lease_expired(f) else ""),
                       Text(f.front.get("title", "")))
         c.print(t)
+    done = q.done_ids()
     for f in q.all("human"):
-        c.print(Text.assemble(("▶ ", "bold red"), (f.id, "bold"), " human: ",
-                              f.front.get("title", "")))
+        pending = [d for d in f.front.get("deps") or [] if d not in done]
+        if pending:
+            c.print(Text.assemble(("⏳ ", "yellow"), (f.id, "bold"),
+                                  f" waiting on {', '.join(pending)}: ", f.front.get("title", "")))
+        else:
+            c.print(Text.assemble(("▶ ", "bold red"), (f.id, "bold"), " human: ",
+                                  f.front.get("title", "")))
     for p in sorted((q.root / "cooldown").iterdir()):
         until = dt.datetime.fromisoformat(p.read_text().strip())
         if until > now():
@@ -1366,6 +1380,9 @@ def cmd_retry(q, args):
                   f"`loopq resolve {args.id} --done`", file=sys.stderr)
             return 2
         frag.front["attempts"] = 0
+        if args.tier:
+            frag.note(f"operator: tier {frag.front.get('tier')} -> {args.tier}")
+            frag.front["tier"] = args.tier
         frag.note(f"operator retry: {args.note}" if args.note else "operator retry")
         release(frag)
         q.move(frag, "ready", "retried")
@@ -1490,6 +1507,9 @@ def main(argv=None):
         p = sub.add_parser(name, parents=[common])
         p.add_argument("id")
         p.add_argument("--note", default="")
+        if name == "retry":
+            p.add_argument("--tier", choices=("judgement", "standard", "mechanical"),
+                           help="move the fragment to another tier")
     sub.add_parser("pause", parents=[common])
     sub.add_parser("resume", parents=[common])
     run = sub.add_parser("run", parents=[common], help="tick, launch the agent's command, collect")

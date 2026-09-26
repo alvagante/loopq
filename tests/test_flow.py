@@ -129,3 +129,19 @@ def test_review_prompt_keeps_new_requirements_out_of_the_verdict(loop):
 
     assert "Follow-ups" in prompt
     assert "outside the fragment's Goal and Acceptance" in prompt
+
+
+def test_review_fragment_carries_the_targets_goal_files_and_acceptance(loop):
+    body = ("## Goal\nAdd the feature.\n## Read first\ndocs/adr/0001.md\n"
+            "## Files\nfeature.txt\n## Acceptance\ntest -f feature.txt\n")
+    fid = loop.add(title="add feature", body=body)
+    loop.tick("a")
+    (loop.wt("a") / "feature.txt").write_text("hello\n")
+    loop.write_result("a", commit="feat: add feature")
+    loop.tick("a")
+
+    [review] = [i for i in loop.ids_in("ready") if loop.fragment(i)[0]["kind"] == "review"]
+    _, review_body = loop.fragment(review)
+    for text in ("Add the feature.", "docs/adr/0001.md", "feature.txt", "test -f feature.txt"):
+        assert text in review_body
+    assert fid in review_body

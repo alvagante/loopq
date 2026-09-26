@@ -19,3 +19,15 @@ def test_status_shows_counts_claims_cooldowns_human_items_and_briefs(loop):
     assert "tb-0002 human: two" in out
     assert "cooldown b until 2026-09-25T15:00:00+00:00" in out
     assert "brief m1 unread" in out
+
+
+def test_status_marks_human_steps_still_waiting_on_their_deps(loop):
+    first = loop.add(title="build it")
+    loop.add(title="check on hardware", kind="human", deps=[first])
+    loop.add(title="decide now", kind="human")
+
+    out = loop.run("status").stdout
+
+    assert re.search(r"tb-0003 human: decide now", out)
+    assert re.search(r"tb-0002 waiting on tb-0001: check on hardware", out)
+    assert "tb-0002 human:" not in out

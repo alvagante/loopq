@@ -352,3 +352,28 @@ def test_milestones_shortens_long_waiting_lists(loop):
     out = loop.run("milestones").stdout
 
     assert "waiting on 5 milestones" in out
+
+
+def test_retry_can_move_a_fragment_to_another_tier(loop):
+    fid = loop.add(title="hard stats", tier="standard")
+    loop.tick("a")
+    loop.write_result("a", status="blocked", body="too hard")
+    loop.tick("a")
+
+    assert loop.run("retry", fid, "--tier", "judgement", "--note", "needs judgement").returncode == 0
+
+    front, body = loop.fragment(fid)
+    assert loop.state_of(fid) == "ready" and front["tier"] == "judgement"
+    assert "tier standard -> judgement" in body
+
+
+def test_retry_rejects_an_unknown_tier(loop):
+    fid = loop.add(title="x")
+    loop.tick("a")
+    loop.write_result("a", status="blocked")
+    loop.tick("a")
+
+    res = loop.run("retry", fid, "--tier", "genius")
+
+    assert res.returncode != 0
+    assert loop.state_of(fid) == "human"
