@@ -49,12 +49,15 @@ def test_tick_refuses_while_the_base_branch_is_checked_out(loop):
 
 
 def test_manual_tick_prints_where_to_work_and_what_to_paste(loop):
+    loop.config["agents"]["a"]["model"] = "example-author-model"
+    loop.save_config()
     loop.add(title="x")
 
     res = loop.tick("a", "--manual")
 
     assert res.returncode == 0
     assert str(loop.wt("a")) in res.stdout
+    assert "model: example-author-model" in res.stdout
     assert "Read .loop/FRAGMENT.md in this worktree and follow it exactly." in res.stdout
 
 

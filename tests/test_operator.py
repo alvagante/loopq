@@ -232,6 +232,31 @@ def test_run_launches_the_agent_captures_output_and_collects(loop):
     assert "agent saw: Read .loop/FRAGMENT.md" in log.read_text()
 
 
+def test_run_substitutes_model_in_agent_command(loop):
+    loop.config["agents"]["a"]["model"] = "example-author-model"
+    loop.config["agents"]["a"]["command"] = ["sh", "-c", FAKE_AGENT, "{model}"]
+    loop.save_config()
+    fid = loop.add(title="with model")
+
+    res = loop.run("run", "--agent", "a")
+
+    assert res.returncode == 0, res.stderr
+    [log] = list((loop.queue / "logs" / "runs").glob(f"{fid}-a-*.log"))
+    assert "agent saw: example-author-model" in log.read_text()
+
+
+def test_run_rejects_missing_model_before_claiming(loop):
+    loop.config["agents"]["a"]["command"] = ["sh", "-c", FAKE_AGENT, "{model}"]
+    loop.save_config()
+    fid = loop.add(title="needs model")
+
+    res = loop.run("run", "--agent", "a")
+
+    assert res.returncode != 0
+    assert "uses {model} but no model is configured" in res.stderr
+    assert loop.state_of(fid) == "ready"
+
+
 def test_run_does_nothing_without_work(loop):
     use_command(loop, "a")
 

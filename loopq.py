@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -810,7 +811,11 @@ def cmd_tick(q, args):
     record_tick(q, agent, rc, "took work" if rc == 0 else "")
     if args.manual:
         if rc == 0:
-            print(f"worktree: {q.cfg['agents'][agent]['worktree']}\nprompt: {AGENT_PROMPT}")
+            spec = q.cfg["agents"][agent]
+            print(f"worktree: {spec['worktree']}")
+            if spec.get("model"):
+                print(f"model: {spec['model']}")
+            print(f"prompt: {AGENT_PROMPT}")
         else:
             print(f"nothing for {agent} now")
     return rc
@@ -998,6 +1003,7 @@ def last_note(frag):
 
 def cmd_status(q, args):
     c = console()
+    c.print(Rule(Text(f"loopq · {q.cfg['project']}", style="bold"), align="left"))
     c.print(counts_text(q))
     claims = q.all("claimed")
     if claims:
@@ -1103,9 +1109,9 @@ def cmd_todo(q, args):
         if note:
             c.print(Text(f"    {note.splitlines()[0][:160]}", style="italic bright_black"))
         command("read", f"cat {frag.path}")
-        command("finish", f'loopq resolve {frag.id} --done --note "..."')
+        command("finish", f'loopq resolve {frag.id} --done --note "..." --loop {shlex.quote(q.cfg["project"])}')
         if frag.front.get("kind") != "human":
-            command("or", f'loopq retry {frag.id} --note "..."')
+            command("or", f'loopq retry {frag.id} --note "..." --loop {shlex.quote(q.cfg["project"])}')
     if not now_items:
         c.print(Text("  nothing", style="bright_black"))
     c.print(Rule(Text("Waiting on the loop", style="bold yellow"), align="left"))
@@ -1128,7 +1134,7 @@ def cmd_todo(q, args):
     for p in unread:
         c.print(Text.assemble(("✉ ", "green"), (p.stem, "bold")))
         command("read", f"cat {p}")
-        command("then", f"loopq ack {p.stem}")
+        command("then", f"loopq ack {p.stem} --loop {shlex.quote(q.cfg['project'])}")
     if not unread:
         c.print(Text("  nothing", style="bright_black"))
     return 0
@@ -1177,6 +1183,28 @@ def cmd_runs(q, args):
         t.add_row(Text(f"{s['start']} ({ago(s['start'])})"), s["agent"], Text(s["id"], style="bold"),
                   outcome, exit_cell, span(s["start"], s["end"]),
                   Text(frag.front.get("title", "") if frag else ""))
+    console().print(t if rows else Text("no sessions recorded", style="bright_black"))
+    return 0
+
+
+def cmd_runs_all(configs, args):
+    rows = [(cfg["project"], q, s)
+            for _, cfg in configs
+            for q in [Queue(cfg)]
+            for s in sessions(q, agent=args.agent)]
+    if args.failed:
+        rows = [row for row in rows if session_failed(row[2])]
+    rows.sort(key=lambda row: row[2]["start"])
+    t = plain_table("Started", "Loop", "Agent", "Fragment", "Outcome", "Exit", "Took", "Title")
+    for project, q, s in rows[-args.limit:]:
+        frag = q.get(s["id"])
+        exit_cell = Text("")
+        if s["exit"] is not None:
+            exit_cell = Text(f"exit {s['exit']}", style="green" if s["exit"] == 0 else "bold red")
+        outcome = Text(s["outcome"], style="yellow" if s["outcome"] == "running" else event_style(s["outcome"]))
+        t.add_row(Text(f"{s['start']} ({ago(s['start'])})"), project, s["agent"],
+                  Text(s["id"], style="bold"), outcome, exit_cell,
+                  span(s["start"], s["end"]), Text(frag.front.get("title", "") if frag else ""))
     console().print(t if rows else Text("no sessions recorded", style="bright_black"))
     return 0
 
@@ -1329,7 +1357,8 @@ def cmd_milestones(q, args):
         if milestone_complete(q, m["id"]):
             status = Text("complete", style="bold green")
             if m.get("hold") and not (q.root / "acks" / m["id"]).exists():
-                status.append(", held until loopq ack " + m["id"], style="yellow")
+                status.append(", held until loopq ack " + m["id"] +
+                              " --loop " + shlex.quote(q.cfg["project"]), style="yellow")
         elif not frags:
             waiting = [a for a in m.get("after") or [] if not (a in ms and milestone_released(q, ms[a]))]
             names = ", ".join(waiting) if len(waiting) <= 3 else f"{len(waiting)} milestones"
@@ -1416,7 +1445,9 @@ def agent_argv(spec, **values):
     if not cmd:
         raise SystemExit("loopq: this agent has no `command` in the config")
     parts = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
-    return [str(p).format(**values) for p in parts]
+    if any("{model}" in str(p) for p in parts) and not spec.get("model"):
+        raise SystemExit("loopq: agent command uses {model} but no model is configured")
+    return [str(p).format(model=spec.get("model", ""), **values) for p in parts]
 
 
 def cmd_run(q, args):
@@ -1428,6 +1459,7 @@ def cmd_run(q, args):
     pidfile = q.root / "logs" / f"{agent}.pid"
     if pid_alive(pidfile):
         return 1
+    agent_argv(spec, prompt=AGENT_PROMPT, worktree=spec["worktree"], id="")
     rc = cmd_tick(q, argparse.Namespace(agent=agent, manual=False))
     if rc != 0:
         return rc
@@ -1466,58 +1498,435 @@ def cmd_run(q, args):
     return code
 
 
+def cron_field_matches(field, value, minimum, maximum):
+    for part in field.split(","):
+        base, slash, interval = part.partition("/")
+        step = int(interval) if slash else 1
+        if step < 1:
+            raise ValueError(f"bad cron field {field!r}")
+        if base == "*":
+            start, end = minimum, maximum
+        elif "-" in base:
+            start, end = (int(n) for n in base.split("-", 1))
+        else:
+            start = int(base)
+            end = maximum if slash else start
+        if not minimum <= start <= end <= maximum:
+            raise ValueError(f"bad cron field {field!r}")
+        if start <= value <= end and (value - start) % step == 0:
+            return True
+    return False
+
+
+def cron_due(schedule, when):
+    fields = schedule.split()
+    if len(fields) != 5:
+        raise ValueError(f"expected five cron fields: {schedule!r}")
+    minute, hour, day, month, weekday = fields
+    minute_match = cron_field_matches(minute, when.minute, 0, 59)
+    hour_match = cron_field_matches(hour, when.hour, 0, 23)
+    month_match = cron_field_matches(month, when.month, 1, 12)
+    day_match = cron_field_matches(day, when.day, 1, 31)
+    sunday_zero = (when.weekday() + 1) % 7
+    week_match = cron_field_matches(weekday, sunday_zero, 0, 7)
+    if sunday_zero == 0:
+        week_match |= cron_field_matches(weekday, 7, 0, 7)
+    days_match = (day_match or week_match) if day != "*" and weekday != "*" else (day_match and week_match)
+    return minute_match and hour_match and month_match and days_match
+
+
+def orca_automation(automations, config, agent):
+    matches = []
+    for automation in automations:
+        command = (automation.get("precheck") or {}).get("command", "")
+        try:
+            parts = shlex.split(command)
+            if ("tick" in parts and parts[parts.index("--agent") + 1] == agent
+                    and Path(parts[parts.index("--config") + 1]).resolve() == config.resolve()):
+                matches.append(automation)
+        except (ValueError, IndexError):
+            continue
+    if len(matches) != 1:
+        raise ValueError(f"expected one matching Orca automation, found {len(matches)}")
+    return matches[0]
+
+
+def scan_loop_configs(config_dir):
+    directory = Path(config_dir).expanduser().resolve()
+    if not directory.is_dir():
+        raise ValueError(f"config directory does not exist: {directory}")
+    paths = sorted((*directory.glob("*.yaml"), *directory.glob("*.yml")))
+    if not paths:
+        raise ValueError(f"no .yaml or .yml files in {directory}")
+    configs, errors, projects = [], [], set()
+    for path in paths:
+        try:
+            cfg = yaml.safe_load(path.read_text())
+            if not isinstance(cfg, dict) or not isinstance(cfg.get("agents"), dict):
+                raise ValueError("expected a mapping with agents")
+            project = cfg["project"]
+            if not isinstance(project, str) or not project:
+                raise ValueError("project must be a nonempty string")
+            if project in projects:
+                raise ValueError(f"duplicate project {project!r}")
+            projects.add(project)
+            configs.append((path, cfg))
+        except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as err:
+            errors.append(f"{path}: {err}")
+    return configs, errors
+
+
+def dispatch_configs(configs, args, home, has_errors=False):
+    rc, orca_items = int(has_errors), None
+    when = now().astimezone()
+    minute_key = when.strftime("%Y-%m-%dT%H:%M%z")
+    for path, cfg in configs:
+        project = cfg["project"]
+        root = home / project
+        for agent, spec in cfg["agents"].items():
+            label = f"{project}/{agent}"
+            if not isinstance(spec, dict):
+                print(f"loopq: {path}: agent {agent!r} must be a mapping", file=sys.stderr)
+                rc = 1
+                continue
+            schedule = spec.get("cron")
+            if spec.get("launcher") == "orca" and not schedule:
+                print(f"loopq: {label}: Orca launcher needs a cron schedule", file=sys.stderr)
+                rc = 1
+                continue
+            if schedule:
+                try:
+                    due = cron_due(schedule, when)
+                except (AttributeError, ValueError) as err:
+                    print(f"loopq: {label}: {err}", file=sys.stderr)
+                    rc = 1
+                    continue
+                if not due:
+                    if args.dry_run:
+                        print(f"skip {label}: schedule {schedule!r} is not due")
+                    continue
+
+            if spec.get("launcher") == "orca":
+                cli = os.environ.get("LOOPQ_ORCA_CLI") or shutil.which("orca")
+                if not cli:
+                    print(f"loopq: {label}: Orca CLI is not on PATH", file=sys.stderr)
+                    rc = 1
+                    continue
+                if orca_items is None:
+                    try:
+                        listed = subprocess.run([cli, "automations", "list", "--json"],
+                                                capture_output=True, text=True, timeout=50)
+                    except (OSError, subprocess.TimeoutExpired) as err:
+                        print(f"loopq: Orca automation list failed: {err}", file=sys.stderr)
+                        return 1
+                    if listed.returncode != 0:
+                        print(f"loopq: Orca automation list failed: {listed.stderr.strip()}",
+                              file=sys.stderr)
+                        return 1
+                    try:
+                        orca_items = json.loads(listed.stdout)["result"]["automations"]
+                    except (ValueError, KeyError, TypeError) as err:
+                        print(f"loopq: could not read Orca automation list: {err}", file=sys.stderr)
+                        return 1
+                try:
+                    automation = orca_automation(orca_items, path, agent)
+                    if automation["rrule"] != schedule:
+                        raise ValueError(f"schedule differs from Orca automation {automation['id']}")
+                except (KeyError, ValueError) as err:
+                    print(f"loopq: {label}: {err}", file=sys.stderr)
+                    rc = 1
+                    continue
+                stamp = root / "ticks" / f"dispatch-{agent}"
+                if stamp.exists() and stamp.read_text().strip() == minute_key:
+                    if args.dry_run:
+                        print(f"skip {label}: already triggered this minute")
+                    continue
+                if args.dry_run:
+                    state = "enabled in Orca; disable its schedule first" if automation["enabled"] else "ready"
+                    print(f"would trigger {label}: Orca automation {automation['id']} ({state})")
+                    continue
+                if automation["enabled"]:
+                    print(f"loopq: {label}: disable Orca automation {automation['id']} before dispatch",
+                          file=sys.stderr)
+                    rc = 1
+                    continue
+                try:
+                    triggered = subprocess.run([cli, "automations", "run", automation["id"], "--json"],
+                                               capture_output=True, text=True, timeout=50)
+                    response = json.loads(triggered.stdout)
+                    if triggered.returncode != 0 or not response.get("ok"):
+                        raise ValueError(triggered.stderr.strip() or response.get("error") or triggered.stdout)
+                except (OSError, subprocess.TimeoutExpired, ValueError) as err:
+                    print(f"loopq: {label}: Orca trigger failed: {err}", file=sys.stderr)
+                    rc = 1
+                    continue
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(minute_key)
+                print(f"triggered {label}: Orca automation {automation['id']}")
+                continue
+
+            if not spec.get("command"):
+                if args.dry_run:
+                    print(f"skip {label}: no command (manual agent)")
+                continue
+            if pid_alive(root / "logs" / f"{agent}.pid"):
+                if args.dry_run:
+                    print(f"skip {label}: session already running")
+                continue
+            log = root / "logs" / f"dispatch-{agent}.log"
+            if args.dry_run:
+                print(f"would start {label}: {path} (output: {log})")
+                continue
+            log.parent.mkdir(parents=True, exist_ok=True)
+            argv = [sys.executable, str(Path(__file__).resolve()), "run", "--agent", agent,
+                    "--config", str(path)]
+            try:
+                with open(log, "a") as out:
+                    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out,
+                                            stderr=subprocess.STDOUT, start_new_session=True)
+            except OSError as err:
+                print(f"loopq: could not start {label}: {err}", file=sys.stderr)
+                rc = 1
+                continue
+            print(f"started {label} (pid {proc.pid}; output: {log})")
+    return rc
+
+
+def cmd_dispatch(args):
+    """Start configured runners across loop configs without waiting for sessions."""
+    try:
+        configs, errors = scan_loop_configs(args.config_dir)
+    except ValueError as err:
+        print(f"loopq: {err}", file=sys.stderr)
+        return 2
+    for err in errors:
+        print(f"loopq: {err}", file=sys.stderr)
+    home = Path(os.environ.get("LOOPQ_HOME") or Path.home() / ".loops")
+    if args.dry_run:
+        return dispatch_configs(configs, args, home, bool(errors))
+    home.mkdir(parents=True, exist_ok=True)
+    with open(home / ".dispatch.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        return dispatch_configs(configs, args, home, bool(errors))
+
+
+HELP_GROUPS = (
+    ("Your work", (
+        ("doctor", "doctor", "Show blockers and items needing attention; exit 1 if any."),
+        ("todo", "todo", "Show actionable human steps, waiting steps and unread briefs."),
+        ("resolve", "resolve ID --done|--requeue", "Close or return a human item."),
+        ("ack", "ack MILESTONE", "Mark a milestone brief read and release its hold."),
+    )),
+    ("Inspect", (
+        ("help", "help [COMMAND]", "Show the overview or detailed command help."),
+        ("loops", "loops", "List discovered loops and config paths."),
+        ("status", "status", "Show queue counts, claims, human items and cooldowns."),
+        ("milestones", "milestones", "Show progress and dependencies by milestone."),
+        ("show", "show ID", "Show a fragment, its dependencies, commits and history."),
+        ("history", "history ID", "Show every recorded transition of a fragment."),
+        ("why", "why AGENT", "Explain why an agent is not taking work."),
+        ("runs", "runs [--agent A] [--failed]", "List agent sessions and outcomes."),
+        ("session", "session ID [--paths]", "Show session output or transcript paths."),
+    )),
+    ("Run the loop", (
+        ("add", "add FILE", "Enqueue a fragment from a Markdown file."),
+        ("tick", "tick --agent A [--manual]", "Collect a result and reserve the next fragment."),
+        ("run", "run --agent A", "Tick, launch the agent command and collect its result."),
+        ("dispatch", "dispatch [--dry-run]", "Drive scheduled agents across all loops."),
+        ("release", "release ID", "Release a claim while keeping partial work."),
+        ("retry", "retry ID [--tier T]", "Return blocked work to the ready queue."),
+        ("pause", "pause", "Stop new claims while still collecting results."),
+        ("resume", "resume", "Allow new claims again."),
+        ("cooldown", "cooldown --agent A", "Show, set or clear an agent cooldown."),
+    )),
+)
+COMMAND_HELP = {name: summary for _, group in HELP_GROUPS for name, _, summary in group}
+
+
+def help_console():
+    return Console(highlight=False, emoji=False, width=min(console().width, 100))
+
+
+def print_overview_help():
+    c = help_console()
+    c.print(Panel.fit("[bold]loopq[/bold]  Local fragment queue with review and integration",
+                      border_style="cyan"))
+    c.print("[bold cyan]Usage[/bold cyan]  loopq [--loop NAME | --config FILE] COMMAND [OPTIONS]")
+    c.print("       loopq help [COMMAND]   or   loopq -h")
+    c.print("       Views cover all loops by default; --loop NAME selects one.")
+    c.print("       Runs are limited to 30 rows; use --loop for detailed why output.")
+    for title, group in HELP_GROUPS:
+        c.print(Rule(Text(title, style="bold"), align="left"))
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="cyan", no_wrap=True)
+        table.add_column()
+        for _, syntax, summary in group:
+            table.add_row(syntax, summary)
+        c.print(table)
+    c.print(Rule(Text("Selection and help", style="bold"), align="left"))
+    options = Table.grid(padding=(0, 2))
+    options.add_column(style="cyan", no_wrap=True)
+    options.add_column()
+    options.add_row("--loop NAME", "Select a project listed by `loopq loops`.")
+    options.add_row("--config FILE", "Use one explicit YAML config; LOOPQ_CONFIG also works.")
+    options.add_row("--config-dir DIR", "Discover configs here; default ~/.config/loopq/loops.d or LOOPQ_CONFIG_DIR.")
+    options.add_row("-h, --help", "Show help; use `loopq help COMMAND` for command options.")
+    c.print(options)
+
+
+class LoopArgumentParser(argparse.ArgumentParser):
+    def print_help(self, file=None):
+        if file is not None and file is not sys.stdout:
+            return super().print_help(file)
+        if self.prog == "loopq":
+            print_overview_help()
+        else:
+            help_console().print(Panel.fit(Text(self.format_help().strip()),
+                                           title=self.prog, border_style="cyan"))
+
+
 def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--config", default=os.environ.get("LOOPQ_CONFIG"))
-    parser = argparse.ArgumentParser(prog="loopq", parents=[common])
-    sub = parser.add_subparsers(dest="command")
-    tick = sub.add_parser("tick", parents=[common])
-    tick.add_argument("--agent", required=True)
-    tick.add_argument("--manual", action="store_true")
-    add = sub.add_parser("add", parents=[common])
-    add.add_argument("file")
-    cool = sub.add_parser("cooldown", parents=[common])
-    cool.add_argument("--agent", required=True)
-    cool.add_argument("--until")
-    cool.add_argument("--clear", action="store_true")
-    res = sub.add_parser("resolve", parents=[common])
-    res.add_argument("id")
-    res.add_argument("--note", default="")
+    common.add_argument("--config", default=argparse.SUPPRESS, metavar="FILE",
+                        help="use one explicit YAML config")
+    common.add_argument("--loop", default=argparse.SUPPRESS,
+                        help="project name from the config directory")
+    common.add_argument("--config-dir", default=argparse.SUPPRESS, metavar="DIR",
+                        help="directory of loop YAML configs")
+    parser = LoopArgumentParser(prog="loopq", parents=[common])
+    sub = parser.add_subparsers(dest="command", parser_class=LoopArgumentParser)
+    tick = sub.add_parser("tick", parents=[common], help=COMMAND_HELP["tick"])
+    tick.add_argument("--agent", required=True, metavar="NAME", help="agent to collect and reserve for")
+    tick.add_argument("--manual", action="store_true", help="print worktree and prompt for manual use")
+    add = sub.add_parser("add", parents=[common], help=COMMAND_HELP["add"])
+    add.add_argument("file", help="Markdown fragment file")
+    cool = sub.add_parser("cooldown", parents=[common], help=COMMAND_HELP["cooldown"])
+    cool.add_argument("--agent", required=True, metavar="NAME", help="agent whose cooldown to inspect or change")
+    cool.add_argument("--until", metavar="ISO", help="set cooldown end as an ISO timestamp")
+    cool.add_argument("--clear", action="store_true", help="clear the cooldown")
+    res = sub.add_parser("resolve", parents=[common], help=COMMAND_HELP["resolve"])
+    res.add_argument("id", help="human fragment ID")
+    res.add_argument("--note", default="", metavar="TEXT", help="record an operator note")
     mode = res.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--done", action="store_true")
-    mode.add_argument("--requeue", action="store_true")
-    sub.add_parser("status", parents=[common])
-    ack = sub.add_parser("ack", parents=[common])
-    ack.add_argument("milestone")
-    sub.add_parser("doctor", parents=[common], help="what needs attention; exit 1 if anything")
-    sub.add_parser("todo", parents=[common], help="your inbox: human steps and briefs")
-    sub.add_parser("milestones", parents=[common])
+    mode.add_argument("--done", action="store_true", help="mark the human fragment complete")
+    mode.add_argument("--requeue", action="store_true", help="return a blocked fragment to agents")
+    sub.add_parser("status", parents=[common], help=COMMAND_HELP["status"])
+    ack = sub.add_parser("ack", parents=[common], help=COMMAND_HELP["ack"])
+    ack.add_argument("milestone", help="milestone ID")
+    sub.add_parser("doctor", parents=[common], help=COMMAND_HELP["doctor"])
+    sub.add_parser("todo", parents=[common], help=COMMAND_HELP["todo"])
+    sub.add_parser("milestones", parents=[common], help=COMMAND_HELP["milestones"])
     for name in ("show", "history"):
-        sub.add_parser(name, parents=[common]).add_argument("id")
-    why = sub.add_parser("why", parents=[common], help="why an agent takes nothing")
-    why.add_argument("agent")
-    runs = sub.add_parser("runs", parents=[common], help="agent sessions, from any launcher")
-    runs.add_argument("--agent")
-    runs.add_argument("--failed", action="store_true")
-    runs.add_argument("--limit", type=int, default=30)
-    sess = sub.add_parser("session", parents=[common], help="full output of a fragment's sessions")
-    sess.add_argument("id")
-    sess.add_argument("--paths", action="store_true", help="print file paths only")
+        sub.add_parser(name, parents=[common], help=COMMAND_HELP[name]).add_argument("id", help="fragment ID")
+    why = sub.add_parser("why", parents=[common], help=COMMAND_HELP["why"])
+    why.add_argument("agent", help="agent name")
+    runs = sub.add_parser("runs", parents=[common], help=COMMAND_HELP["runs"])
+    runs.add_argument("--agent", metavar="NAME", help="show only this agent")
+    runs.add_argument("--failed", action="store_true", help="show only failed sessions")
+    runs.add_argument("--limit", type=int, default=30, metavar="N", help="maximum rows (default 30)")
+    sess = sub.add_parser("session", parents=[common], help=COMMAND_HELP["session"])
+    sess.add_argument("id", help="fragment ID")
+    sess.add_argument("--paths", action="store_true", help="show transcript paths only")
     for name in ("release", "retry"):
-        p = sub.add_parser(name, parents=[common])
-        p.add_argument("id")
-        p.add_argument("--note", default="")
+        p = sub.add_parser(name, parents=[common], help=COMMAND_HELP[name])
+        p.add_argument("id", help="fragment ID")
+        p.add_argument("--note", default="", metavar="TEXT", help="record an operator note")
         if name == "retry":
             p.add_argument("--tier", choices=("judgement", "standard", "mechanical"),
                            help="move the fragment to another tier")
-    sub.add_parser("pause", parents=[common])
-    sub.add_parser("resume", parents=[common])
-    run = sub.add_parser("run", parents=[common], help="tick, launch the agent's command, collect")
-    run.add_argument("--agent", required=True)
+    sub.add_parser("pause", parents=[common], help=COMMAND_HELP["pause"])
+    sub.add_parser("resume", parents=[common], help=COMMAND_HELP["resume"])
+    run = sub.add_parser("run", parents=[common], help=COMMAND_HELP["run"])
+    run.add_argument("--agent", required=True, metavar="NAME", help="configured agent to launch")
+    dispatch = sub.add_parser("dispatch", parents=[common],
+                              help=COMMAND_HELP["dispatch"])
+    dispatch.add_argument("--dry-run", action="store_true", help="show due actions without launching")
+    sub.add_parser("loops", parents=[common], help=COMMAND_HELP["loops"])
+    help_parser = sub.add_parser("help", help=COMMAND_HELP["help"])
+    help_parser.add_argument("topic", nargs="?", help="command to describe")
     args = parser.parse_args(argv)
-    if not args.config:
-        parser.error("--config or LOOPQ_CONFIG is required")
-    cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.command == "runs" and args.limit < 1:
+        parser.error("--limit must be positive")
+    if args.command == "help":
+        target = parser if not args.topic else sub.choices.get(args.topic)
+        if target is None:
+            parser.error(f"unknown command {args.topic!r}; run `loopq help` to list commands")
+        target.print_help()
+        return 0
+    args.config = getattr(args, "config", None)
+    args.loop = getattr(args, "loop", None)
+    args.config_dir = getattr(args, "config_dir", None) or os.environ.get("LOOPQ_CONFIG_DIR") or \
+        str(Path.home() / ".config" / "loopq" / "loops.d")
+    if args.command == "dispatch":
+        return cmd_dispatch(args)
+    if args.command == "loops":
+        try:
+            configs, errors = scan_loop_configs(args.config_dir)
+        except ValueError as err:
+            parser.error(str(err))
+        for path, cfg in configs:
+            print(f"{cfg['project']}\t{path}")
+        for err in errors:
+            print(f"loopq: {err}", file=sys.stderr)
+        return int(bool(errors))
+    if args.config and args.loop:
+        parser.error("--config and --loop cannot be used together")
+
+    config = args.config or (None if args.loop else os.environ.get("LOOPQ_CONFIG"))
+    configs, errors = [], []
+    if config:
+        cfg = yaml.safe_load(Path(config).read_text())
+    else:
+        try:
+            configs, errors = scan_loop_configs(args.config_dir)
+        except ValueError as err:
+            parser.error(f"{err}; use --config or set LOOPQ_CONFIG")
+        if args.loop:
+            selected = [cfg for _, cfg in configs if cfg["project"] == args.loop]
+            if not selected:
+                parser.error(f"unknown loop {args.loop!r}; use `loopq loops` to list them")
+            cfg = selected[0]
+        elif len(configs) == 1:
+            cfg = configs[0][1]
+        elif args.command in (None, "doctor", "status", "todo", "milestones", "runs") or \
+                (args.command == "cooldown" and not (args.until or args.clear)):
+            for err in errors:
+                print(f"loopq: {err}", file=sys.stderr)
+            if args.command == "runs":
+                return int(bool(errors) or cmd_runs_all(configs, args))
+            views = {None: cmd_doctor, "doctor": cmd_doctor, "status": cmd_status,
+                     "todo": cmd_todo, "milestones": cmd_milestones,
+                     "cooldown": cmd_cooldown}
+            results = []
+            for _, found in configs:
+                if args.command in ("todo", "milestones", "cooldown"):
+                    console().print(Rule(Text(f"loopq · {found['project']}", style="bold"), align="left"))
+                results.append(views[args.command](Queue(found), args))
+            return int(bool(errors) or any(results))
+        elif args.command in ("show", "history", "session"):
+            if errors:
+                for err in errors:
+                    print(f"loopq: {err}", file=sys.stderr)
+                print("loopq: cannot search every loop; fix the configs or use --loop NAME",
+                      file=sys.stderr)
+                return 1
+            matches = []
+            for _, found in configs:
+                candidate = Queue(found)
+                if (candidate.get(args.id) if args.command == "show" else
+                        sessions(candidate, fid=args.id) if args.command == "session" else
+                        any(e["id"] == args.id for e in candidate.events())):
+                    matches.append(candidate)
+            if len(matches) != 1:
+                parser.error(f"fragment {args.id!r} matches {len(matches)} loops; use --loop NAME")
+            return {"show": cmd_show, "history": cmd_history,
+                    "session": cmd_session}[args.command](matches[0], args)
+        else:
+            parser.error("multiple loops found; use --loop NAME or --config FILE")
+
     q = Queue(cfg)
     commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown,
                 "resolve": cmd_resolve, "ack": cmd_ack, "status": cmd_status,

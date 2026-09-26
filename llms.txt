@@ -1,0 +1,24 @@
+# loopq
+
+> Local CLI for coordinating AI coding agents across Git worktrees with a fragment queue, independent review, gates, and integration.
+
+loopq is a single Python script run with uv. It discovers project configs in
+`~/.config/loopq/loops.d/` and keeps queue state under `~/.loops/` by default.
+It does not require a hosted service. The first public release is `0.1.0`.
+
+## Use loopq
+
+- [README](https://raw.githubusercontent.com/alvagante/loopq/main/README.md): What loopq does, installation, commands, and agent launch modes.
+- [Quickstart](https://raw.githubusercontent.com/alvagante/loopq/main/docs/quickstart.md): Create a loop and run a manual author and reviewer cycle.
+- [Configuration](https://raw.githubusercontent.com/alvagante/loopq/main/docs/configuration.md): YAML fields, models, runners, dispatcher, and cron setup.
+- [Setup skill](https://raw.githubusercontent.com/alvagante/loopq/main/skills/loopq-setup/SKILL.md): Agent-guided project setup with reviewable changes and approvals.
+
+## Develop loopq
+
+- [Agent guidance](https://raw.githubusercontent.com/alvagante/loopq/main/AGENTS.md): Repository structure and verification for coding agents.
+- [Source](https://raw.githubusercontent.com/alvagante/loopq/main/loopq.py): CLI and queue implementation.
+- [Changelog](https://raw.githubusercontent.com/alvagante/loopq/main/CHANGELOG.md): Release notes.
+
+## Optional
+
+- [License](https://raw.githubusercontent.com/alvagante/loopq/main/LICENSE): MIT terms.
