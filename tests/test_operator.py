@@ -185,6 +185,7 @@ def test_handoff_keeps_partial_work_cools_the_holder_and_waits_for_the_target(lo
     res = loop.run("handoff", fid, "--to", "b", "--note", "a hit its usage limit")
 
     assert res.returncode == 0, res.stderr
+    assert "loopq --loop demo run --agent b" in res.stdout
     front, body = loop.fragment(fid)
     assert loop.state_of(fid) == "ready" and front["assigned_to"] == "b"
     assert "handed off from a to b: a hit its usage limit" in body

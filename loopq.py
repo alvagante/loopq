@@ -1500,8 +1500,8 @@ def cmd_handoff(q, args):
             frag.save()
             if source is None:
                 q.event("handed-off", frag.id, to="ready", detail=args.to)
-            print(f"{args.id} is waiting for {args.to}; `loopq run --agent {args.to}` "
-                  "starts it now")
+            print(f"{args.id} is waiting for {args.to}; `loopq --loop {q.cfg['project']} "
+                  f"run --agent {args.to}` starts it now")
     return 0
 
 
