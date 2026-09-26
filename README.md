@@ -71,6 +71,8 @@ loopq dispatch --dry-run
 
 See the [command reference](docs/commands.md) for every command, selection
 rules, and options. The [configuration reference](docs/configuration.md)
-covers runners and scheduling. Run `loopq help COMMAND` for CLI help.
+covers runners and scheduling, and a [multi-agent example](docs/examples/multi-agent.yaml)
+shows several harnesses and one harness with two models. Run
+`loopq help COMMAND` for CLI help.
 
 [Release notes](CHANGELOG.md) · [License](LICENSE) · [Agent documentation](llms.txt)

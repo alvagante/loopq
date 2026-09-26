@@ -76,6 +76,25 @@ def test_dispatch_starts_agents_across_loops(loop):
     assert list((loop.home / "second" / "review").glob("*.md"))
 
 
+def test_multi_agent_example_config_is_accepted_by_dispatch(loop):
+    example = LOOPQ.parent / "docs" / "examples" / "multi-agent.yaml"
+    cfg = yaml.safe_load(example.read_text())
+    for name, spec in cfg["agents"].items():
+        if any("{model}" in part for part in spec["command"]):
+            assert spec.get("model"), name
+    worktrees = [spec["worktree"] for spec in cfg["agents"].values()]
+    assert len(set(worktrees)) == len(worktrees)
+    config_dir = loop.tmp / "examples.d"
+    config_dir.mkdir()
+    (config_dir / "example.yaml").write_text(example.read_text())
+
+    preview = invoke(loop, "dispatch", "--config-dir", str(config_dir), "--dry-run")
+
+    assert preview.returncode == 0, preview.stderr
+    for name in cfg["agents"]:
+        assert f"example/{name}" in preview.stdout
+
+
 def test_dispatch_reports_missing_directory(loop):
     result = invoke(loop, "dispatch", "--config-dir", str(loop.tmp / "missing"))
     assert result.returncode == 2

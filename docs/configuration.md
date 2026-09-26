@@ -90,6 +90,42 @@ until someone answers it. Run such an agent with `command` as above instead of
 `launcher: orca`. If a session is already stuck, `loopq handoff ID` stops a
 `run` session and requeues its work; close an Orca session yourself.
 
+## Several agents and models
+
+[examples/multi-agent.yaml](examples/multi-agent.yaml) is a complete config
+with five agents across Claude Code, Codex, Cursor and OpenCode, all started by
+`dispatch`. It splits one harness into two agents with different models:
+
+| Agent | Model | Tiers | Kinds |
+|---|---|---|---|
+| `claude-opus` | `claude-opus-5-5` | judgement | all |
+| `claude-sonnet` | `claude-sonnet-5` | standard, mechanical | work, review, conflict |
+| `codex` | Codex default | all | all |
+| `cursor` | Cursor default | standard, mechanical | work, review, conflict |
+| `opencode` | `qwen3.8:latest` | mechanical | work |
+
+loopq routes by agent, not by model, so a harness used with two models is
+two agents: two names, two worktrees, the same `command` with a different
+`model`. Each fragment's `tier` then decides which model can take it, and
+`retry ID --tier TIER` moves a fragment to another model.
+
+Things to keep in mind when splitting a harness:
+
+- An agent never reviews its own work, but `claude-opus` can review work by
+  `claude-sonnet`. For reviews from a different vendor, leave `review` out of
+  one of the two agents' kinds.
+- Usage limits usually belong to the account, while cooldowns belong to the
+  agent. When one agent hits a shared limit, the other fails on its next run
+  and cools down too; `cooldown --agent NAME --clear` ends each one.
+- Give every tier at least one agent, and every kind a fragment can have.
+  Otherwise that work waits in the ready queue; `why AGENT` shows which rule
+  excludes it.
+- Stagger the `cron` minutes so agents do not all start in the same minute.
+
+The permissions in the example are scoped rather than bypassed. A run that
+needs a command outside them fails and is requeued; check
+`loopq runs --failed`, then widen the allowlist or sandbox for that agent.
+
 ## One cron job for all loops
 
 Put each loop config in one directory, for example `~/.config/loopq/loops.d/`.

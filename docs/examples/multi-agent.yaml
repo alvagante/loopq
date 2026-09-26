@@ -1,0 +1,78 @@
+# A loop with several harnesses, and one harness split into two agents with
+# different models so each tier goes to a suitable model.
+#
+# Every agent needs its own worktree, including two agents of the same
+# harness. Create them detached at `base` before the first dispatch:
+#   git worktree add --detach /absolute/path/project-loop-claude-opus loop-base
+#
+# One host cron entry runs `loopq dispatch` every minute; each agent's `cron`
+# decides when it is due. Stagger the minutes so agents do not start together.
+project: example
+prefix: ex
+base: loop-base
+integration_worktree: /absolute/path/project-loop-integration
+lease: 4h
+gate:
+  - npm test
+  - git diff --check {base}...HEAD
+forbid_chars: ["\u2014", "\u2013"]  # em dash, en dash
+preamble: |
+  You are working on the example project. Read AGENTS.md first.
+
+agents:
+  # Claude Code, strongest model: judgement work, planning and briefs.
+  claude-opus:
+    worktree: /absolute/path/project-loop-claude-opus
+    model: claude-opus-5-5
+    tiers: [judgement]
+    kinds: [work, review, conflict, decompose, brief]
+    limit_cooldown: 3h
+    command: ["claude", "-p", "{prompt}", "--model", "{model}",
+              "--permission-mode", "acceptEdits",
+              "--allowedTools", "Bash(git *),Bash(npm *),Bash(node *),WebFetch,WebSearch"]
+    cron: "0,20,40 * * * *"
+
+  # The same harness with a cheaper model: routine work and reviews.
+  claude-sonnet:
+    worktree: /absolute/path/project-loop-claude-sonnet
+    model: claude-sonnet-5
+    tiers: [standard, mechanical]
+    kinds: [work, review, conflict]
+    limit_cooldown: 3h
+    command: ["claude", "-p", "{prompt}", "--model", "{model}",
+              "--permission-mode", "acceptEdits",
+              "--allowedTools", "Bash(git *),Bash(npm *),Bash(node *),WebFetch,WebSearch"]
+    cron: "10,30,50 * * * *"
+
+  # Codex in its workspace sandbox with network access. No `model`: the
+  # Codex default applies.
+  codex:
+    worktree: /absolute/path/project-loop-codex
+    tiers: [judgement, standard, mechanical]
+    kinds: [work, review, conflict, decompose, brief]
+    limit_cooldown: 5h
+    cooldown_notice: "Codex hit its limit; after switching accounts run: loopq --loop example cooldown --agent codex --clear"
+    command: ["codex", "exec", "-s", "workspace-write",
+              "-c", "sandbox_workspace_write.network_access=true", "{prompt}"]
+    cron: "5,25,45 * * * *"
+
+  # Cursor in sandboxed print mode.
+  cursor:
+    worktree: /absolute/path/project-loop-cursor
+    tiers: [standard, mechanical]
+    kinds: [work, review, conflict]
+    limit_cooldown: 2h
+    command: ["cursor-agent", "-p", "--trust", "--sandbox", "enabled", "{prompt}"]
+    cron: "15,35,55 * * * *"
+
+  # OpenCode through Ollama. `--model` is required: without it Ollama opens a
+  # model picker and the session waits.
+  opencode:
+    worktree: /absolute/path/project-loop-opencode
+    model: qwen3.8:latest
+    tiers: [mechanical]
+    kinds: [work]
+    limit_cooldown: 2h
+    command: ["ollama", "launch", "opencode", "-y", "--model", "{model}",
+              "--", "run", "{prompt}"]
+    cron: "17,37,57 * * * *"
