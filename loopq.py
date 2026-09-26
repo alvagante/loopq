@@ -67,7 +67,12 @@ TEMPLATES = {
         "Review the diff `{base}...HEAD` against the fragment's Goal, "
         "Acceptance and Read first. Re-run the Acceptance commands. Do not "
         "edit files. Verdict `approve`, or `changes` with numbered blocking "
-        "findings."
+        "findings. A finding is blocking only when the diff fails the "
+        "fragment's Goal or Acceptance, breaks something that worked, or "
+        "contradicts a document under Read first. A new requirement, a "
+        "hardening idea or a problem in unchanged code is outside the "
+        "fragment's Goal and Acceptance: list it under a `Follow-ups` "
+        "heading, where it never changes the verdict."
     ),
     "decompose": (
         "Read `{source}` and the documents it names. Write this milestone's "

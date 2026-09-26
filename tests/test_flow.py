@@ -116,3 +116,16 @@ def test_gate_rejects_forbidden_characters_in_added_lines(loop):
 
     assert "forbidden characters" in loop.fragment(fid)[1]
     assert loop.fragment(fid)[0]["attempts"] == 1
+
+
+def test_review_prompt_keeps_new_requirements_out_of_the_verdict(loop):
+    loop.add(title="thing")
+    loop.tick("a")
+    loop.write_result("a")
+    loop.tick("a")
+    loop.tick("b")
+
+    prompt = (loop.wt("b") / ".loop" / "FRAGMENT.md").read_text()
+
+    assert "Follow-ups" in prompt
+    assert "outside the fragment's Goal and Acceptance" in prompt

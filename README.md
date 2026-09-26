@@ -62,6 +62,11 @@ Act:
 Human fragments notify once, when their deps are done, not when they are
 created.
 
+Reviews block only on the fragment's own Goal and Acceptance, regressions,
+or contradictions with its Read first documents. New requirements and
+problems in unchanged code go under `Follow-ups` and never change the
+verdict; the operator turns them into fragments with `add`.
+
 ## Launching agents
 
 loopq is not tied to any harness. Per agent, the config may set:
