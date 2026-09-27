@@ -79,7 +79,9 @@ for approval before changing cron or an external scheduler.
 
 After approval, run the setup commands. For a new loopq checkout, preview
 `manage.sh install --dry-run`, then install to an unused bin path on `PATH`.
-Verify with `loopq loops` and `loopq doctor --loop PROJECT`. For scheduled
+Verify with `loopq loops` and `loopq doctor --loop PROJECT`. Optionally run
+`loopq use PROJECT` to save the new loop as the default for later commands.
+For scheduled
 setups driven by loopq, also run `loopq dispatch --dry-run` and inspect the
 installed cron entry. Report the installed path, branch, worktrees, config,
 queue path, roles and models, schedule if any, verification results, and the

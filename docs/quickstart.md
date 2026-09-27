@@ -60,8 +60,14 @@ agents:
 
 ```sh
 loopq loops
-loopq doctor --loop example
+loopq use example
+loopq doctor
 ```
+
+`loopq use example` saves `example` as the default loop, so the later
+commands can omit `--loop example`. `--loop PROJECT`, `LOOPQ_LOOP`, or
+running inside a loop worktree select a loop too; see the
+[command reference](commands.md#selecting-a-loop).
 
 The queue is created at `~/.loops/example/` by default. Set `LOOPQ_HOME` to
 another parent directory if needed. If you prefer to keep the config elsewhere,
@@ -92,9 +98,9 @@ test "$(cat hello-loopq.txt)" = hello
 ```
 
 ```sh
-loopq add first-fragment.md --loop example
-loopq status --loop example
-loopq tick --agent author --manual --loop example
+loopq add first-fragment.md
+loopq status
+loopq tick --agent author --manual
 ```
 
 The tick prints the author's worktree path and this prompt:
@@ -113,32 +119,32 @@ their respective worktrees, even if both use the same harness.
 When the author finishes, collect its result and assign the review:
 
 ```sh
-loopq tick --agent author --loop example
-loopq tick --agent reviewer --manual --loop example
+loopq tick --agent author
+loopq tick --agent reviewer --manual
 ```
 
 Start a separate reviewer session in its printed worktree with the same
 prompt. After it writes its result, collect and integrate:
 
 ```sh
-loopq tick --agent reviewer --loop example
-loopq show ex-0001 --loop example
-loopq doctor --loop example
+loopq tick --agent reviewer
+loopq show ex-0001
+loopq doctor
 ```
 
 Each tick first collects the prior result, then tries to claim another
 fragment. Exit 0 means a new task was claimed, so launch that agent again;
-exit 1 means nothing was assigned (check `loopq doctor --loop example` or
-`loopq why author --loop example` for the reason). Exit 2 means the tick was
+exit 1 means nothing was assigned (check `loopq doctor` or `loopq why author`
+for the reason). Exit 2 means the tick was
 refused. An approved review moves
 `loop-base`, not your original branch. Merge or cherry-pick from `loop-base`
 into your normal branch when you decide to adopt the work.
 
 For unattended sessions, set `agents.NAME.command` to a harness CLI invocation
 that accepts the `{prompt}` argument, then run
-`loopq run --agent author --loop example` or let the single cron dispatcher
+`loopq run --agent author` or let the single cron dispatcher
 schedule it. `run` calls `tick` itself. If the harness owns scheduling, make
-`loopq tick --agent NAME --loop example` its precheck and launch the session
+`loopq tick --agent NAME` its precheck and launch the session
 only on exit 0. See the
 [configuration reference](configuration.md#one-cron-job-for-all-loops) for
 dispatch and Orca setup.
