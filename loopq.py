@@ -1678,6 +1678,80 @@ def scan_loop_configs(config_dir):
     return configs, errors
 
 
+def saved_loop_path():
+    return Path(os.environ.get("LOOPQ_HOME") or Path.home() / ".loops") / ".current-loop"
+
+
+def git_common_dir(path):
+    try:
+        res = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    except OSError:
+        return None
+    return Path(res.stdout.strip()).resolve() if res.returncode == 0 else None
+
+
+def loop_for_directory(configs, cwd):
+    def worktrees(cfg):
+        paths = [cfg.get("integration_worktree")]
+        paths += [spec.get("worktree") for spec in cfg["agents"].values() if isinstance(spec, dict)]
+        return [Path(p).expanduser().resolve() for p in paths if isinstance(p, str) and p]
+
+    inside = {cfg["project"] for _, cfg in configs
+              for wt in worktrees(cfg) if cwd == wt or wt in cwd.parents}
+    if inside:
+        return inside.pop() if len(inside) == 1 else None
+    common = git_common_dir(cwd)
+    if common is None:
+        return None
+    same = {cfg["project"] for _, cfg in configs
+            if (wts := worktrees(cfg)) and git_common_dir(wts[0]) == common}
+    return same.pop() if len(same) == 1 else None
+
+
+def default_loop(configs):
+    """Return (project, source) for the loop used when no selection is given."""
+    if name := os.environ.get("LOOPQ_LOOP"):
+        return name, "LOOPQ_LOOP"
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        cwd = None
+    if cwd and (name := loop_for_directory(configs, cwd)):
+        return name, "current directory"
+    path = saved_loop_path()
+    if path.is_file() and (name := path.read_text().strip()):
+        return name, "loopq use"
+    return None, None
+
+
+def cmd_use(args, parser):
+    """Show, save or clear the default loop."""
+    path = saved_loop_path()
+    if args.clear:
+        path.unlink(missing_ok=True)
+        print("default loop cleared")
+        return 0
+    try:
+        configs, errors = scan_loop_configs(args.config_dir)
+    except ValueError as err:
+        parser.error(str(err))
+    for err in errors:
+        print(f"loopq: {err}", file=sys.stderr)
+    if args.name:
+        if args.name not in {cfg["project"] for _, cfg in configs}:
+            parser.error(f"unknown loop {args.name!r}; use `loopq loops` to list them")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(args.name + "\n")
+        print(f"default loop: {args.name}")
+        name, source = default_loop(configs)
+        if name != args.name:
+            print(f"loopq: {source} selects {name} first", file=sys.stderr)
+        return 0
+    name, source = default_loop(configs)
+    print(f"{name}\t({source})" if name else "no default loop; views cover every loop")
+    return 0
+
+
 def dispatch_configs(configs, args, home, has_errors=False):
     rc, orca_items = int(has_errors), None
     when = now().astimezone()
@@ -1825,6 +1899,7 @@ HELP_GROUPS = (
     ("Inspect", (
         ("help", "help [COMMAND]", "Show the overview or detailed command help."),
         ("loops", "loops", "List discovered loops and config paths."),
+        ("use", "use [NAME | --clear]", "Show, save or clear the default loop."),
         ("status", "status", "Show queue counts, claims, human items and cooldowns."),
         ("milestones", "milestones", "Show progress and dependencies by milestone."),
         ("show", "show ID", "Show a fragment, its dependencies, commits and history."),
@@ -1859,7 +1934,7 @@ def print_overview_help():
                       border_style="cyan"))
     c.print("[bold cyan]Usage[/bold cyan]  loopq [--loop NAME | --config FILE] COMMAND [OPTIONS]")
     c.print("       loopq help [COMMAND]   or   loopq -h")
-    c.print("       Views cover all loops by default; --loop NAME selects one.")
+    c.print("       Views cover all loops unless --loop NAME or a default loop selects one.")
     c.print("       Runs are limited to 30 rows; use --loop for detailed why output.")
     for title, group in HELP_GROUPS:
         c.print(Rule(Text(title, style="bold"), align="left"))
@@ -1874,6 +1949,8 @@ def print_overview_help():
     options.add_column(style="cyan", no_wrap=True)
     options.add_column()
     options.add_row("--loop NAME", "Select a project listed by `loopq loops`.")
+    options.add_row("default loop", "LOOPQ_LOOP, then the current worktree, then `loopq use NAME`.")
+    options.add_row("--all", "Ignore the default loop and use every discovered loop.")
     options.add_row("--config FILE", "Use one explicit YAML config; LOOPQ_CONFIG also works.")
     options.add_row("--config-dir DIR", "Discover configs here; default ~/.config/loopq/loops.d or LOOPQ_CONFIG_DIR.")
     options.add_row("-h, --help", "Show help; use `loopq help COMMAND` for command options.")
@@ -1897,6 +1974,8 @@ def main(argv=None):
                         help="use one explicit YAML config")
     common.add_argument("--loop", default=argparse.SUPPRESS,
                         help="project name from the config directory")
+    common.add_argument("--all", action="store_true", default=argparse.SUPPRESS,
+                        help="ignore the default loop and use every discovered loop")
     common.add_argument("--config-dir", default=argparse.SUPPRESS, metavar="DIR",
                         help="directory of loop YAML configs")
     parser = LoopArgumentParser(prog="loopq", parents=[common])
@@ -1953,6 +2032,10 @@ def main(argv=None):
                               help=COMMAND_HELP["dispatch"])
     dispatch.add_argument("--dry-run", action="store_true", help="show due actions without launching")
     sub.add_parser("loops", parents=[common], help=COMMAND_HELP["loops"])
+    use = sub.add_parser("use", parents=[common], help=COMMAND_HELP["use"])
+    use_mode = use.add_mutually_exclusive_group()
+    use_mode.add_argument("name", nargs="?", help="project to use when no loop is selected")
+    use_mode.add_argument("--clear", action="store_true", help="remove the saved default loop")
     help_parser = sub.add_parser("help", help=COMMAND_HELP["help"])
     help_parser.add_argument("topic", nargs="?", help="command to describe")
     args = parser.parse_args(argv)
@@ -1966,6 +2049,7 @@ def main(argv=None):
         return 0
     args.config = getattr(args, "config", None)
     args.loop = getattr(args, "loop", None)
+    args.all = getattr(args, "all", False)
     args.config_dir = getattr(args, "config_dir", None) or os.environ.get("LOOPQ_CONFIG_DIR") or \
         str(Path.home() / ".config" / "loopq" / "loops.d")
     if args.command == "dispatch":
@@ -1980,10 +2064,14 @@ def main(argv=None):
         for err in errors:
             print(f"loopq: {err}", file=sys.stderr)
         return int(bool(errors))
+    if args.command == "use":
+        return cmd_use(args, parser)
     if args.config and args.loop:
         parser.error("--config and --loop cannot be used together")
+    if args.all and (args.config or args.loop):
+        parser.error("--all cannot be used with --config or --loop")
 
-    config = args.config or (None if args.loop else os.environ.get("LOOPQ_CONFIG"))
+    config = args.config or (None if args.loop or args.all else os.environ.get("LOOPQ_CONFIG"))
     configs, errors = [], []
     if config:
         cfg = yaml.safe_load(Path(config).read_text())
@@ -1992,11 +2080,18 @@ def main(argv=None):
             configs, errors = scan_loop_configs(args.config_dir)
         except ValueError as err:
             parser.error(f"{err}; use --config or set LOOPQ_CONFIG")
-        if args.loop:
-            selected = [cfg for _, cfg in configs if cfg["project"] == args.loop]
+        loop, source = args.loop, None
+        if not loop and not args.all:
+            loop, source = default_loop(configs)
+        if loop:
+            selected = [cfg for _, cfg in configs if cfg["project"] == loop]
             if not selected:
-                parser.error(f"unknown loop {args.loop!r}; use `loopq loops` to list them")
+                hint = "; run `loopq use --clear`" if source == "loopq use" else ""
+                parser.error(f"unknown loop {loop!r}" + (f" from {source}" if source else "")
+                             + f"; use `loopq loops` to list them{hint}")
             cfg = selected[0]
+            if source:
+                print(f"loopq: using loop {loop} ({source})", file=sys.stderr)
         elif len(configs) == 1:
             cfg = configs[0][1]
         elif args.command in (None, "doctor", "status", "todo", "milestones", "runs") or \
@@ -2033,7 +2128,7 @@ def main(argv=None):
             return {"show": cmd_show, "history": cmd_history,
                     "session": cmd_session}[args.command](matches[0], args)
         else:
-            parser.error("multiple loops found; use --loop NAME or --config FILE")
+            parser.error("multiple loops found; use --loop NAME, --config FILE or `loopq use NAME`")
 
     q = Queue(cfg)
     commands = {"tick": cmd_tick, "add": cmd_add, "cooldown": cmd_cooldown,

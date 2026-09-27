@@ -9,12 +9,88 @@ import yaml
 from conftest import LOOPQ
 
 
-def invoke(loop, config_dir, *args, extra_env=None):
+def invoke(loop, config_dir, *args, extra_env=None, cwd=None):
+    env = {**os.environ, "LOOPQ_HOME": str(loop.home),
+           "LOOPQ_CONFIG_DIR": str(config_dir), **(extra_env or {})}
+    if "LOOPQ_LOOP" not in (extra_env or {}):
+        env.pop("LOOPQ_LOOP", None)
     return subprocess.run(
         [sys.executable, str(LOOPQ), *args], capture_output=True, text=True,
-        env={**os.environ, "LOOPQ_HOME": str(loop.home),
-             "LOOPQ_CONFIG_DIR": str(config_dir), **(extra_env or {})},
+        env=env, cwd=cwd or loop.tmp,
     )
+
+
+def two_loops(loop):
+    config_dir = loop.tmp / "loops.d"
+    config_dir.mkdir()
+    (config_dir / "demo.yaml").symlink_to(loop.config_path)
+    other = copy.deepcopy(loop.config)
+    other["project"] = "other"
+    other["integration_worktree"] = str(loop.tmp / "other-int")
+    for name, spec in other["agents"].items():
+        spec["worktree"] = str(loop.tmp / f"other-{name}")
+    (config_dir / "other.yml").write_text(yaml.safe_dump(other))
+    return config_dir
+
+
+def test_saved_default_loop_selects_and_narrows_views(loop):
+    config_dir = two_loops(loop)
+
+    assert "no default loop" in invoke(loop, config_dir, "use").stdout
+    unknown = invoke(loop, config_dir, "use", "missing")
+    assert unknown.returncode == 2 and "unknown loop" in unknown.stderr
+
+    saved = invoke(loop, config_dir, "use", "other")
+    assert saved.returncode == 0, saved.stderr
+    assert invoke(loop, config_dir, "use").stdout.strip() == "other\t(loopq use)"
+
+    status = invoke(loop, config_dir, "status")
+    assert status.returncode == 0, status.stderr
+    assert "loopq · demo" not in status.stdout and "other" in status.stdout
+    assert "using loop other (loopq use)" in status.stderr
+
+    fragment = loop.tmp / "fragment.md"
+    fragment.write_text("---\ntitle: t\nkind: work\ntier: standard\ndeps: []\n---\n## Goal\nx\n")
+    added = invoke(loop, config_dir, "add", str(fragment))
+    assert added.returncode == 0, added.stderr
+    assert list((loop.home / "other" / "ready").glob("*.md"))
+
+    explicit = invoke(loop, config_dir, "status", "--loop", "demo")
+    assert "demo" in explicit.stdout and "using loop" not in explicit.stderr
+
+    everything = invoke(loop, config_dir, "status", "--all")
+    assert "loopq · demo" in everything.stdout and "loopq · other" in everything.stdout
+    assert invoke(loop, config_dir, "status", "--all", "--loop", "demo").returncode == 2
+
+    (loop.home / ".current-loop").write_text("gone\n")
+    stale = invoke(loop, config_dir, "status")
+    assert stale.returncode == 2 and "loopq use --clear" in stale.stderr
+
+    assert invoke(loop, config_dir, "use", "--clear").returncode == 0
+    assert not (loop.home / ".current-loop").exists()
+    assert "multiple loops found" in invoke(loop, config_dir, "add", str(fragment)).stderr
+
+
+def test_environment_and_directory_select_before_saved_loop(loop):
+    config_dir = two_loops(loop)
+    assert invoke(loop, config_dir, "use", "other").returncode == 0
+
+    in_worktree = invoke(loop, config_dir, "use", cwd=loop.wt("a") / ".")
+    assert in_worktree.stdout.strip() == "demo\t(current directory)"
+    (loop.repo / "sub").mkdir()
+    in_repo = invoke(loop, config_dir, "use", cwd=loop.repo / "sub")
+    assert in_repo.stdout.strip() == "demo\t(current directory)"
+
+    from_env = invoke(loop, config_dir, "use", cwd=loop.wt("a"),
+                      extra_env={"LOOPQ_LOOP": "other"})
+    assert from_env.stdout.strip() == "other\t(LOOPQ_LOOP)"
+
+    status = invoke(loop, config_dir, "status", cwd=loop.wt("a"))
+    assert status.returncode == 0, status.stderr
+    assert "using loop demo (current directory)" in status.stderr
+
+    unknown = invoke(loop, config_dir, "status", extra_env={"LOOPQ_LOOP": "nope"})
+    assert unknown.returncode == 2 and "from LOOPQ_LOOP" in unknown.stderr
 
 
 def test_discovers_loops_and_selects_by_project(loop):

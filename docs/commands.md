@@ -8,7 +8,7 @@ Run `loopq help` or `loopq -h` for the CLI overview, and
 
 loopq discovers `.yaml` and `.yml` configs in `~/.config/loopq/loops.d/`.
 `loopq loops` lists their project names and paths. With one config, selection
-is optional. With multiple configs:
+is optional. With multiple configs and no default loop:
 
 - `doctor`, `status`, `todo`, `milestones`, and read-only `cooldown` show all loops.
 - `runs` combines sessions across loops, with one `--limit` for the combined list.
@@ -20,6 +20,20 @@ Use `--loop PROJECT` to select one discovered project. Use `--config FILE` or
 `LOOPQ_CONFIG=FILE` to select an explicit config. Use `--config-dir DIR` or
 `LOOPQ_CONFIG_DIR=DIR` to change the discovery directory. The queue lives in
 `$LOOPQ_HOME/<project>/` (default `~/.loops`).
+
+Without `--loop`, `--config` or `LOOPQ_CONFIG`, loopq uses a default loop from
+the first of these that is set:
+
+1. `LOOPQ_LOOP=PROJECT` in the environment.
+2. The current directory: inside a loop's integration or agent worktree, or
+   elsewhere in the same repository when only one loop uses it.
+3. `loopq use PROJECT`, saved in `$LOOPQ_HOME/.current-loop`.
+
+A default loop acts like `--loop`, including for `doctor`, `status` and other
+views, and loopq prints `using loop PROJECT (source)` on standard error.
+`loopq use` shows the default and its source; `loopq use --clear` removes the
+saved one. Pass `--all` to ignore the default for one command. `dispatch`
+always scans every loop.
 
 ## Operator tasks
 
@@ -37,6 +51,7 @@ Use `--loop PROJECT` to select one discovered project. Use `--config FILE` or
 | --- | --- |
 | `help [COMMAND]` | Show the overview or detailed help for one command. |
 | `loops` | List discovered projects and config paths. |
+| `use [PROJECT \| --clear]` | Show the default loop and its source, save one, or clear the saved one. |
 | `status` | Show queue counts, claims, human items, cooldowns, and unread briefs. |
 | `milestones` | Show progress and dependencies for each milestone. |
 | `show ID` | Show a fragment, dependency states, commits, and history. |

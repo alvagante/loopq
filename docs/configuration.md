@@ -9,7 +9,10 @@ combines sessions across loops with a global `--limit` (30 by default).
 `show`, `history`, and `session` find a unique fragment ID across loops.
 `why` requires a loop when multiple are discovered because its output can be
 long. Other commands that change state require `--loop PROJECT` when multiple
-loops exist; `dispatch` always scans every loop. Pass `--config FILE` or set
+loops exist, unless a default loop is set with `LOOPQ_LOOP`, the current
+worktree, or `loopq use PROJECT`; a default also narrows the views to that
+loop (see [commands](commands.md#selecting-a-loop)). `dispatch` always scans
+every loop. Pass `--config FILE` or set
 `LOOPQ_CONFIG=FILE` to use an explicit file. `LOOPQ_CONFIG_DIR` or
 `--config-dir DIR` changes the discovery directory.
 

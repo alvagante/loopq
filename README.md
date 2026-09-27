@@ -31,12 +31,15 @@ worktree per agent identity, an integration worktree, and a config in
 
 ## Common workflows
 
-Find a project and check what needs attention:
+Find a project, make it the default for later commands, and check what
+needs attention. `LOOPQ_LOOP=PROJECT`, working inside one of the loop's
+worktrees, or `--loop PROJECT` select a loop too:
 
 ```sh
 loopq loops
-loopq doctor --loop PROJECT
-loopq todo --loop PROJECT
+loopq use PROJECT
+loopq doctor
+loopq todo
 ```
 
 For a manual author and reviewer cycle, add a fragment and run each agent in
@@ -44,28 +47,28 @@ the worktree and with the prompt printed by `tick`. Each agent reads
 `.loop/FRAGMENT.md` and writes `.loop/RESULT.md`.
 
 ```sh
-loopq add task.md --loop PROJECT
-loopq tick --agent author --manual --loop PROJECT
+loopq add task.md
+loopq tick --agent author --manual
 # Run the author, then collect the result.
-loopq tick --agent author --loop PROJECT
-loopq tick --agent reviewer --manual --loop PROJECT
+loopq tick --agent author
+loopq tick --agent reviewer --manual
 # Run the reviewer, then collect and integrate an approved result.
-loopq tick --agent reviewer --loop PROJECT
+loopq tick --agent reviewer
 ```
 
 Inspect a task or a stalled agent:
 
 ```sh
-loopq show ID --loop PROJECT
-loopq session ID --loop PROJECT
-loopq why author --loop PROJECT
+loopq show ID
+loopq session ID
+loopq why author
 ```
 
 For automated sessions, configure an agent command and use `loopq run`, or
 schedule all configured loops with one `loopq dispatch` cron entry:
 
 ```sh
-loopq run --agent author --loop PROJECT
+loopq run --agent author
 loopq dispatch --dry-run
 ```
 
