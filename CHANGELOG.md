@@ -10,7 +10,12 @@ Notable user-visible changes are recorded here.
   stuck on usage limits. It stops the agent's `run` session, keeps partial
   work on the fragment branch, cools the agent down and requeues the fragment,
   optionally for one named agent.
+- `cooldown` without `--agent` shows the status of every agent.
 - Command reference in `docs/commands.md` and a recorded demo in the README.
+
+### Changed
+
+- The license is now Apache License 2.0 (was MIT).
 
 ### Fixed
 

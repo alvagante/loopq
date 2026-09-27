@@ -58,7 +58,7 @@ Use `--loop PROJECT` to select one discovered project. Use `--config FILE` or
 | `retry ID [--note TEXT] [--tier TIER]` | Return blocked or failed work to the ready queue with attempts reset. Tier choices: `judgement`, `standard`, `mechanical`. Close operator steps with `resolve --done`. |
 | `pause` | Stop new claims while still collecting finished results. |
 | `resume` | Allow new claims again. |
-| `cooldown --agent NAME [--until ISO\|--clear]` | Show, set, or clear an agent cooldown. |
+| `cooldown [--agent NAME [--until ISO\|--clear]]` | Without `--agent`, show every agent as cooling down or available. With it, show, set, or clear that agent's cooldown. |
 
 `run` exits 1 without launching if a previous run for that agent is alive.
 When a launched command finishes, `run` returns its exit code. Human fragments

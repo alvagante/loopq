@@ -4,7 +4,7 @@ loopq discovers `.yaml` and `.yml` configs in `~/.config/loopq/loops.d/`.
 Use `loopq loops` to list them and `--loop PROJECT` to select a project by the
 config's `project` field. If there is only one config, selection is optional.
 Bare `loopq` runs `doctor` across every discovered loop. `status`, `todo`,
-`milestones`, and read-only `cooldown --agent NAME` show each loop. `runs`
+`milestones`, and read-only `cooldown` show each loop. `runs`
 combines sessions across loops with a global `--limit` (30 by default).
 `show`, `history`, and `session` find a unique fragment ID across loops.
 `why` requires a loop when multiple are discovered because its output can be
@@ -93,8 +93,8 @@ until someone answers it. Run such an agent with `command` as above instead of
 ## Several agents and models
 
 [examples/multi-agent.yaml](examples/multi-agent.yaml) is a complete config
-with five agents across Claude Code, Codex, Cursor and OpenCode, all started by
-`dispatch`. It splits one harness into two agents with different models:
+with nine agents across Claude Code, Codex, Cursor, OpenCode, Gemini CLI,
+GitHub Copilot CLI, Kiro CLI and Goose, all started by `dispatch`. It splits one harness into two agents with different models:
 
 | Agent | Model | Tiers | Kinds |
 |---|---|---|---|
@@ -103,6 +103,10 @@ with five agents across Claude Code, Codex, Cursor and OpenCode, all started by
 | `codex` | Codex default | all | all |
 | `cursor` | Cursor default | standard, mechanical | work, review, conflict |
 | `opencode` | `qwen3.8:latest` | mechanical | work |
+| `gemini` | `gemini-2.5-pro` | standard, mechanical | work, review, conflict |
+| `copilot` | `sonnet` | standard, mechanical | work, review, conflict |
+| `kiro` | `claude-sonnet-5` | standard, mechanical | work, review, conflict |
+| `goose` | `claude-sonnet-5` | standard, mechanical | work |
 
 loopq routes by agent, not by model, so a harness used with two models is
 two agents: two names, two worktrees, the same `command` with a different
@@ -116,7 +120,7 @@ Things to keep in mind when splitting a harness:
   one of the two agents' kinds.
 - Usage limits usually belong to the account, while cooldowns belong to the
   agent. When one agent hits a shared limit, the other fails on its next run
-  and cools down too; `cooldown --agent NAME --clear` ends each one.
+  and cools down too; `cooldown` shows them all and `cooldown --agent NAME --clear` ends each one.
 - Give every tier at least one agent, and every kind a fragment can have.
   Otherwise that work waits in the ready queue; `why AGENT` shows which rule
   excludes it.

@@ -853,6 +853,19 @@ def tick(q, agent):
 
 
 def cmd_cooldown(q, args):
+    if not args.agent:
+        if args.until or args.clear:
+            print("loopq: --until and --clear need --agent", file=sys.stderr)
+            return 2
+        c = console()
+        for name in q.cfg["agents"]:
+            if in_cooldown(q, name):
+                until = (q.root / "cooldown" / name).read_text().strip()
+                c.print(Text.assemble(("⏸ ", "yellow"), (name, "bold"), " cooling down until ",
+                                      (until, "yellow"), f" ({ago(until)})"))
+            else:
+                c.print(Text.assemble(("● ", "green"), (name, "bold"), " available"))
+        return 0
     path = q.root / "cooldown" / args.agent
     with q.locked():
         if args.clear:
@@ -1830,7 +1843,7 @@ HELP_GROUPS = (
         ("retry", "retry ID [--tier T]", "Return blocked work to the ready queue."),
         ("pause", "pause", "Stop new claims while still collecting results."),
         ("resume", "resume", "Allow new claims again."),
-        ("cooldown", "cooldown --agent A", "Show, set or clear an agent cooldown."),
+        ("cooldown", "cooldown [--agent A]", "Show every agent's cooldown status, or set or clear one agent's cooldown."),
     )),
 )
 COMMAND_HELP = {name: summary for _, group in HELP_GROUPS for name, _, summary in group}
@@ -1894,7 +1907,7 @@ def main(argv=None):
     add = sub.add_parser("add", parents=[common], help=COMMAND_HELP["add"])
     add.add_argument("file", help="Markdown fragment file")
     cool = sub.add_parser("cooldown", parents=[common], help=COMMAND_HELP["cooldown"])
-    cool.add_argument("--agent", required=True, metavar="NAME", help="agent whose cooldown to inspect or change")
+    cool.add_argument("--agent", metavar="NAME", help="agent whose cooldown to inspect or change (default: show all agents)")
     cool.add_argument("--until", metavar="ISO", help="set cooldown end as an ISO timestamp")
     cool.add_argument("--clear", action="store_true", help="clear the cooldown")
     res = sub.add_parser("resolve", parents=[common], help=COMMAND_HELP["resolve"])

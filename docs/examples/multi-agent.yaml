@@ -76,3 +76,57 @@ agents:
     command: ["ollama", "launch", "opencode", "-y", "--model", "{model}",
               "--", "run", "{prompt}"]
     cron: "17,37,57 * * * *"
+
+  # Gemini CLI in headless mode. `auto_edit` approves file edits only; shell
+  # commands are limited to the allowed tools.
+  gemini:
+    worktree: /absolute/path/project-loop-gemini
+    model: gemini-2.5-pro
+    tiers: [standard, mechanical]
+    kinds: [work, review, conflict]
+    limit_cooldown: 3h
+    command: ["gemini", "-p", "{prompt}", "--model", "{model}",
+              "--approval-mode", "auto_edit",
+              "--allowed-tools", "run_shell_command(git),run_shell_command(npm)"]
+    cron: "1,21,41 * * * *"
+
+  # GitHub Copilot CLI in prompt mode. Tools are allowed by glob; paths and
+  # URLs outside the worktree stay blocked. `model` accepts a family alias.
+  copilot:
+    worktree: /absolute/path/project-loop-copilot
+    model: sonnet
+    tiers: [standard, mechanical]
+    kinds: [work, review, conflict]
+    limit_cooldown: 3h
+    command: ["copilot", "-p", "{prompt}", "--model", "{model}",
+              "--allow-tool", "write",
+              "--allow-tool", "shell(git:*)",
+              "--allow-tool", "shell(npm:*)"]
+    cron: "3,23,43 * * * *"
+
+  # Kiro CLI without prompts. Trust only these tools; check the names with
+  # `/tools` in your Kiro version. `model` is a Kiro model id.
+  kiro:
+    worktree: /absolute/path/project-loop-kiro
+    model: claude-sonnet-5
+    tiers: [standard, mechanical]
+    kinds: [work, review, conflict]
+    limit_cooldown: 3h
+    command: ["kiro-cli", "chat", "--no-interactive", "--model", "{model}",
+              "--trust-tools=fs_read,fs_write,execute_bash", "{prompt}"]
+    cron: "7,27,47 * * * *"
+
+  # Goose headless. The provider and model come from the flags, not from an
+  # interactive session, and `--no-session` keeps runs independent.
+  goose:
+    worktree: /absolute/path/project-loop-goose
+    model: claude-sonnet-5
+    tiers: [standard, mechanical]
+    kinds: [work]
+    limit_cooldown: 2h
+    command: ["goose", "run", "--no-session", "--provider", "anthropic",
+              "--model", "{model}", "-t", "{prompt}"]
+    cron: "9,29,49 * * * *"
+
+  # Not included: Aider edits only the files named on its command line, so it
+  # does not fit a fragment whose scope the agent discovers itself.

@@ -69,3 +69,13 @@ def test_another_agents_expired_lease_is_requeued_without_cooling_anyone(loop):
     assert loop.fragment(fid)[0]["claimed_by"] == "b"
     assert (loop.wt("b") / "partial.txt").exists()
     assert loop.notifications() == []
+
+
+def test_cooldown_without_agent_shows_every_agent(loop):
+    loop.run("cooldown", "--agent", "b", "--until", "2099-01-01T00:00:00+00:00")
+
+    out = loop.run("cooldown").stdout
+
+    assert "a available" in out
+    assert "b cooling down until 2099-01-01T00:00:00+00:00" in out
+    assert loop.run("cooldown", "--clear").returncode == 2
