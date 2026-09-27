@@ -4,7 +4,7 @@ loopq coordinates coding agents in separate Git worktrees. It assigns tasks,
 collects results, gets another agent to review them, and integrates approved
 changes into a dedicated base branch. It runs locally as a single Python script.
 
-[![Watch loopq in action](https://asciinema.org/a/1266609.svg)](https://asciinema.org/a/1266609)
+[![Watch loopq in action](https://asciinema.org/a/1266672.svg)](https://asciinema.org/a/1266672)
 
 ## Install
 
@@ -16,7 +16,7 @@ cd loopq
 ./manage.sh install
 ```
 
-The installer creates a symlink in `~/.local/bin`, which must be on your `PATH`.
+The script creates a symlink in `~/.local/bin`, which must be on your `PATH`.
 Keep the checkout in place. Preview the symlink with
 `./manage.sh install --dry-run`. You can also run
 `uv run --script /path/to/loopq.py` without installing.
