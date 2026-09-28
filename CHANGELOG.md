@@ -2,17 +2,7 @@
 
 Notable user-visible changes are recorded here.
 
-## [Unreleased]
-
-### Added
-
-- `use [NAME | --clear]` shows, saves or clears the default loop. Without
-  `--loop`, `--config` or `LOOPQ_CONFIG`, loopq now picks a default loop from
-  `LOOPQ_LOOP`, the current worktree or repository, then the name saved by
-  `loopq use NAME`; a default acts like `--loop` and is reported on standard
-  error, and `--all` ignores it for one command.
-
-## [0.2.0] - 2026-09-26
+## [0.2.0] - 2026-09-28
 
 ### Added
 
@@ -22,6 +12,11 @@ Notable user-visible changes are recorded here.
   optionally for one named agent.
 - `cooldown` without `--agent` shows the status of every agent.
 - Command reference in `docs/commands.md` and a recorded demo in the README.
+- `use [NAME | --clear]` shows, saves or clears the default loop. Without
+  `--loop`, `--config` or `LOOPQ_CONFIG`, loopq now picks a default loop from
+  `LOOPQ_LOOP`, the current worktree or repository, then the name saved by
+  `loopq use NAME`; a default acts like `--loop` and is reported on standard
+  error, and `--all` ignores it for one command.
 
 ### Changed
 
