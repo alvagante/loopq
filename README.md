@@ -10,6 +10,18 @@ changes into a dedicated base branch. It runs locally as a single Python script.
 
 Requires Git, [uv](https://docs.astral.sh/uv/), and Python 3.11 or newer.
 
+Install uv with the standalone installer:
+
+```sh
+# macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+or with Homebrew: `brew install uv`.
+
 ```sh
 git clone https://github.com/alvagante/loopq.git
 cd loopq
