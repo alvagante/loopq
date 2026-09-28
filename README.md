@@ -4,7 +4,7 @@ loopq coordinates coding agents in separate Git worktrees. It assigns tasks,
 collects results, gets another agent to review them, and integrates approved
 changes into a dedicated base branch. It runs locally as a single Python script.
 
-[![Watch loopq in action](https://asciinema.org/a/1266672.svg)](https://asciinema.org/a/1266672)
+<a href="https://asciinema.org/a/1266672" target="_blank" rel="noopener noreferrer"><img src="https://asciinema.org/a/1266672.svg" alt="Watch loopq in action"></a>
 
 ## Install
 
