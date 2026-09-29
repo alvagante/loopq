@@ -1,5 +1,11 @@
 # loopq
 
+**Your coding agents, all the loops you want: assign, review, integrate. Locally.**
+
+Run as many project loops as you need, each with its own agents, worktrees, and
+queue. Work is assigned, reviewed by a second identity, and integrated when it
+passes, on your machine, under your control.
+
 loopq coordinates coding agents in separate Git worktrees. It assigns tasks,
 collects results, gets another agent to review them, and integrates approved
 changes into a dedicated base branch. It runs locally as a single Python script.
@@ -19,9 +25,17 @@ loopq version
 ```
 
 The script creates a symlink in `~/.local/bin`, which must be on your `PATH`.
-Keep the checkout in place. Preview the symlink with
-`./manage.sh install --dry-run`. You can also run
-`uv run --script /path/to/loopq.py` without installing.
+Keep the checkout in place. Preview with `./manage.sh install --dry-run`.
+You can also run `uv run --script /path/to/loopq.py` without installing.
+
+On a TTY, install also asks whether to symlink the
+[loopq skill](skills/loopq/SKILL.md) into skill directories for agent
+harnesses found on `PATH` (Claude Code, Codex, Cursor, OpenCode, and others).
+Use `--skill` or `--no-skill` to skip the prompt. That skill is the agent
+entry point for creating a loop, enqueueing work, monitoring, unblocking, and
+running or scheduling ticks. Invoke it as `loopq` from the project's Git
+checkout (or ask the harness to use the skill by name). For Codex you can
+install from `alvagante/loopq`, path `skills/loopq`, then invoke `$loopq`.
 
 ### Docker image
 
@@ -55,30 +69,39 @@ project-loop-reviewer/     reviewer worktree
 project-loop-integration/  integration worktree
 ```
 
-Choose one setup method:
+Every setup needs two agent identities for cross-agent review, even if they
+share a harness. Choose `main`, `HEAD`, or another commit as the starting
+ref; uncommitted files are excluded. Keep the base branch unchecked out while
+loopq runs. Configs live in `~/.config/loopq/loops.d/` and queue data in
+`~/.loops/` by default.
 
-1. **CLI-assisted: `loopq create`** writes a starter config and prints the
-   branch and worktree commands. Review the agent roles, commands, gate, and
-   paths. Replace `START_REF` with the commit to start from, then run the
-   printed commands. `loopq create --project NAME` writes a separate loop
-   config for the same repository.
-2. **Agent-guided: [loopq-setup skill](skills/loopq-setup/SKILL.md)** inspects
-   your checkout, proposes the config and Git commands, and performs the
-   approved setup.
-3. **Manual: [quickstart](docs/quickstart.md)** walks through creating the
-   base branch, worktrees, and config yourself.
+### Agent-guided (recommended)
 
-All three methods need two agent identities for cross-agent review, even if
-they use the same harness. Choose `main`, `HEAD`, or another commit as the
-starting ref; uncommitted files are excluded. Keep the base branch unchecked
-out while loopq runs. Configs live in `~/.config/loopq/loops.d/` and queue
-data in `~/.loops/` by default. Verify with `loopq --loop NAME doctor`.
+With the skill installed, open the project checkout in your harness and
+invoke `loopq` (or ask it to set up a loopq project). The skill inspects the
+repo, asks about roles, models, harnesses, and optional scheduling, then
+shows the exact Git commands and YAML for approval before applying them. It
+verifies with `loopq loops` and `loopq doctor`. Details:
+[skill](skills/loopq/SKILL.md) and [setup prompt](docs/setup-prompt.md).
+
+### CLI-assisted
+
+`loopq create` writes a starter config and prints the branch and worktree
+commands. Review the agent roles, commands, gate, and paths. Replace
+`START_REF` with the commit to start from, then run the printed commands.
+`loopq create --project NAME` writes a separate loop config for the same
+repository. Verify with `loopq --loop NAME doctor`.
+
+### Manual
+
+Follow the [quickstart](docs/quickstart.md) to create the base branch,
+worktrees, and config yourself.
 
 Loopq advances only its base branch. Merge that branch into your delivery
-branch when ready. To bring newer `main` commits into future loop work, follow
-the [quickstart update steps](docs/quickstart.md#keeping-the-loop-current).
-Multiple loops in one repository need distinct names, prefixes, base branches,
-and worktree paths.
+branch when ready. To bring newer `main` commits into future loop work,
+follow the [quickstart update steps](docs/quickstart.md#keeping-the-loop-current).
+Multiple loops in one repository need distinct names, prefixes, base
+branches, and worktree paths.
 
 ## Common workflows
 
@@ -88,9 +111,10 @@ approved review and passing gate move it to `done` and advance the loop base.
 Work needing an operator decision goes to `human`. The queue files live
 outside the Git checkout.
 
-Find a project, make it the default for later commands, and check what
-needs attention. `LOOPQ_LOOP=PROJECT`, working inside one of the loop's
-worktrees, or `--loop PROJECT` select a loop too:
+Use the [loopq skill](skills/loopq/SKILL.md) from your agent for these jobs,
+or run the CLI yourself. Find a project, make it the default for later
+commands, and check what needs attention. `LOOPQ_LOOP=PROJECT`, working
+inside one of the loop's worktrees, or `--loop PROJECT` select a loop too:
 
 ```sh
 loopq loops

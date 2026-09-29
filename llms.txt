@@ -13,7 +13,7 @@ It does not require a hosted service. The current release is `0.2.0`.
 - [Commands](https://raw.githubusercontent.com/alvagante/loopq/main/docs/commands.md): All commands, selection rules, and options.
 - [Configuration](https://raw.githubusercontent.com/alvagante/loopq/main/docs/configuration.md): YAML fields, models, runners, dispatcher, and cron setup.
 - [Multi-agent example](https://raw.githubusercontent.com/alvagante/loopq/main/docs/examples/multi-agent.yaml): Several harnesses, and one harness with two models for different tiers.
-- [Setup skill](https://raw.githubusercontent.com/alvagante/loopq/main/skills/loopq-setup/SKILL.md): Agent-guided project setup with reviewable changes and approvals.
+- [loopq skill](https://raw.githubusercontent.com/alvagante/loopq/main/skills/loopq/SKILL.md): Agent-guided setup, enqueueing, monitoring, and running loops.
 
 ## Develop loopq
 

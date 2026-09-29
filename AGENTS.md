@@ -2,7 +2,8 @@
 
 loopq is a local CLI for coordinating coding agents in separate Git worktrees.
 The implementation is one Python script, `loopq.py`, with inline uv dependencies.
-`manage.sh` installs a symlink to that script. The user workflow is in
+`manage.sh` installs a symlink to that script and can install the loopq skill
+into harness skill directories. The user workflow is in
 `README.md`; configuration details are in `docs/configuration.md`.
 
 ## Code map
@@ -12,11 +13,12 @@ The implementation is one Python script, `loopq.py`, with inline uv dependencies
   are in `loopq.py`. Follow that flow before changing queue behavior.
 - `dispatch` scans configs in `LOOPQ_CONFIG_DIR` and schedules command or Orca
   agents. Keep its single cron entry model when changing scheduling.
-- `skills/loopq-setup/SKILL.md` guides installation and project setup.
+- `skills/loopq/SKILL.md` routes common operator jobs to disclosed workflow
+  files under `skills/loopq/`.
 
 ## Changes and verification
 
-- Keep CLI options, help text, README, configuration docs, and the setup skill
+- Keep CLI options, help text, README, configuration docs, and the loopq skill
   consistent when a user-facing behavior changes.
 - Use the CLI tests in `tests/` with temporary repositories and worktrees for
   queue, Git, and dispatcher changes.

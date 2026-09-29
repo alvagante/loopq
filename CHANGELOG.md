@@ -8,6 +8,11 @@ Notable user-visible changes are recorded here.
 
 - `version` prints the loopq version without requiring a loop config.
 - Docker image and release workflow for versioned GHCR and Docker Hub images.
+- `manage.sh install` can install the loopq skill into skill directories for
+  agent harnesses found on `PATH` (`--skill` / `--no-skill`). The skill covers
+  setup, enqueueing work, monitoring, acting on blockers, and running or
+  scheduling ticks. Installing replaces a prior `loopq-setup` symlink from
+  this checkout.
 - `create` writes a starter loop config and prints the branch and worktree
   commands needed to finish setup.
 - `new` writes a work or human fragment template for `add`.
@@ -25,7 +30,8 @@ Notable user-visible changes are recorded here.
 ### Documentation
 
 - Expanded setup and parallel worktree guidance, Docker usage, and common
-  operator commands in the README and references.
+  operator commands in the README and references. README presents the loopq
+  skill as the recommended setup path and day-to-day agent entry point.
 
 ## [0.2.0] - 2026-09-28
 

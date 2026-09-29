@@ -1,7 +1,7 @@
 # Quickstart
 
 To have your agent do these setup steps, use the
-[loopq-setup skill](../skills/loopq-setup/SKILL.md). Continue at
+[loopq skill](../skills/loopq/SKILL.md). Continue at
 [Add work](#3-add-work) after it verifies the loop.
 
 This example runs two agent identities with your existing agent harness against
