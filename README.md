@@ -37,6 +37,15 @@ running or scheduling ticks. Invoke it as `loopq` from the project's Git
 checkout (or ask the harness to use the skill by name). For Codex you can
 install from `alvagante/loopq`, path `skills/loopq`, then invoke `$loopq`.
 
+In a Swamp repository, install the same skill for that repository with:
+
+```sh
+swamp extension pull @alvagante/loopq
+```
+
+The Swamp extension provides the skill. Install the Loopq CLI separately to
+run its commands.
+
 ### Docker image
 
 Build the image locally to inspect your loops. Mount the config directory and
