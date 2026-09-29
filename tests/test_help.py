@@ -18,7 +18,7 @@ def test_help_and_dash_h_show_every_command_without_a_config():
 
     assert overview.returncode == short.returncode == 0
     assert overview.stdout == short.stdout
-    for name in ("help", "loops", "doctor", "todo", "status", "milestones",
+    for name in ("help", "version", "loops", "create", "doctor", "todo", "status", "milestones",
                  "show", "history", "why", "runs", "session", "add", "tick",
                  "run", "dispatch", "release", "handoff", "retry", "resolve", "ack",
                  "pause", "resume", "cooldown"):
@@ -26,6 +26,10 @@ def test_help_and_dash_h_show_every_command_without_a_config():
     assert "--loop NAME" in overview.stdout
     assert "--config-dir DIR" in overview.stdout
     assert "-h, --help" in overview.stdout
+    assert "list [filters] [--json]" in overview.stdout
+    assert "new PATH [options]" in overview.stdout
+    assert "list [--state S]" not in overview.stdout
+    assert "new PATH [--kind" not in overview.stdout
 
 
 def test_command_help_matches_dash_h_and_explains_options():
@@ -43,3 +47,11 @@ def test_unknown_help_topic_is_an_error():
 
     assert result.returncode == 2
     assert "unknown command 'missing'" in result.stderr
+
+
+def test_version_works_without_a_config():
+    result = cli("version")
+
+    assert result.returncode == 0
+    assert result.stdout == "loopq 0.3.0\n"
+    assert result.stderr == ""

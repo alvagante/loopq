@@ -17,6 +17,7 @@ import re
 import shlex
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import time
@@ -32,6 +33,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+VERSION = "0.3.0"
 STATES = ("ready", "claimed", "review", "human", "done")
 KIND_ORDER = ("conflict", "review", "work", "decompose", "brief")
 
@@ -171,7 +173,7 @@ class Queue:
         self.cfg = cfg
         self.root = home / cfg["project"]
         self.actor = "operator"
-        for d in (*STATES, "briefs", "logs", "cooldown", "acks", "ticks"):
+        for d in (*STATES, "briefs", "logs", "cooldown", "acks", "ticks", "archive"):
             (self.root / d).mkdir(parents=True, exist_ok=True)
 
     def event(self, event, fid=None, agent=None, to=None, detail=""):
@@ -775,6 +777,31 @@ def cmd_add(q, args):
     return 0
 
 
+def cmd_new(args):
+    """Write a fragment template for `add`. Only `work` and `human` are ever
+    hand-authored: `review`/`conflict`/`decompose`/`brief` fragments are
+    always created internally by loopq itself."""
+    path = Path(args.path)
+    if path.exists():
+        print(f"loopq: {path} already exists", file=sys.stderr)
+        return 2
+    if args.kind == "work" and not args.tier:
+        print("loopq: --tier is required for kind work", file=sys.stderr)
+        return 2
+    front = {"title": args.title, "kind": args.kind,
+             "deps": [d for d in (args.deps or "").split(",") if d]}
+    if args.milestone:
+        front["milestone"] = args.milestone
+    if args.kind == "work":
+        front["tier"] = args.tier
+        body = "## Goal\n\n\n## Read first\n\n\n## Files\n\n\n## Acceptance\n\n"
+    else:
+        body = "## Goal\n\n"
+    path.write_text("---\n" + yaml.safe_dump(front, sort_keys=False) + "---\n" + body)
+    print(str(path))
+    return 0
+
+
 AGENT_PROMPT = "Read .loop/FRAGMENT.md in this worktree and follow it exactly."
 
 
@@ -941,11 +968,15 @@ def ago(ts):
     return f"in {amount}" if future else f"{amount} ago"
 
 
+def format_span_secs(secs):
+    return f"{int(secs // 3600)}h{int(secs % 3600 // 60):02d}m" if secs >= 3600 else f"{int(secs // 60)}m{int(secs % 60):02d}s"
+
+
 def span(start, end):
     if not end:
         return ""
     secs = (dt.datetime.fromisoformat(end) - dt.datetime.fromisoformat(start)).total_seconds()
-    return f"{int(secs // 3600)}h{int(secs % 3600 // 60):02d}m" if secs >= 3600 else f"{int(secs // 60)}m{int(secs % 60):02d}s"
+    return format_span_secs(secs)
 
 
 def styled(value, table):
@@ -1020,6 +1051,27 @@ def last_note(frag):
     return notes[-1].lstrip("- ").strip() if notes and notes[-1] else ""
 
 
+def events_by_id(q):
+    out = {}
+    for e in q.events():
+        out.setdefault(e["id"], []).append(e)
+    return out
+
+
+def created_at(by_id, frag):
+    events = by_id.get(frag.id)
+    if events:
+        return events[0]["ts"]
+    return dt.datetime.fromtimestamp(frag.path.stat().st_mtime, dt.timezone.utc).isoformat()
+
+
+def done_at(by_id, frag):
+    for e in reversed(by_id.get(frag.id) or []):
+        if e.get("to") == "done":
+            return e["ts"]
+    return dt.datetime.fromtimestamp(frag.path.stat().st_mtime, dt.timezone.utc).isoformat()
+
+
 def cmd_status(q, args):
     c = console()
     c.print(Rule(Text(f"loopq · {q.cfg['project']}", style="bold"), align="left"))
@@ -1050,6 +1102,55 @@ def cmd_status(q, args):
     for p in sorted((q.root / "briefs").glob("*.md")):
         if not (q.root / "acks" / p.stem).exists():
             c.print(Text.assemble(("✉ ", "green"), f"brief {p.stem} unread: {p}"))
+    return 0
+
+
+def list_rows(q, args):
+    """Every fragment as a plain dict, filtered by the list command's flags."""
+    done = q.done_ids()
+    rows = []
+    for f in q.all(args.state):
+        fr = f.front
+        if args.kind and fr.get("kind") != args.kind:
+            continue
+        if args.tier and fr.get("tier") != args.tier:
+            continue
+        if args.milestone and fr.get("milestone") != args.milestone:
+            continue
+        if args.agent and fr.get("claimed_by") != args.agent:
+            continue
+        pending = [d for d in fr.get("deps") or [] if d not in done]
+        rows.append({
+            "id": f.id, "state": f.state, "kind": fr.get("kind"), "tier": fr.get("tier"),
+            "milestone": fr.get("milestone"), "title": fr.get("title", ""),
+            "claimed_by": fr.get("claimed_by"), "lease_until": fr.get("lease_until"),
+            "lease_expired": f.state == "claimed" and lease_expired(f),
+            "deps": fr.get("deps") or [], "pending_deps": pending,
+        })
+    return rows
+
+
+def cmd_list(q, args):
+    rows = list_rows(q, args)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    c = console()
+    if not rows:
+        c.print(Text("no fragments", style="bright_black"))
+        return 0
+    t = plain_table("ID", "State", "Kind", "Tier", "Milestone", "Title", "Info")
+    for r in rows:
+        info = Text("")
+        if r["state"] == "claimed":
+            info = Text(f"{r['claimed_by']} lease {ago(r['lease_until'])}",
+                        style="red" if r["lease_expired"] else "")
+        elif r["state"] == "human" and r["pending_deps"]:
+            info = Text("waiting on " + ", ".join(r["pending_deps"]), style="yellow")
+        t.add_row(Text(r["id"], style="bold"), styled(r["state"], STATE_STYLE),
+                  styled(r["kind"] or "", KIND_STYLE), styled(r["tier"] or "", TIER_STYLE),
+                  Text(r["milestone"] or ""), Text(r["title"]), info)
+    c.print(t)
     return 0
 
 
@@ -1192,8 +1293,16 @@ def cmd_runs(q, args):
     rows = sessions(q, agent=args.agent)
     if args.failed:
         rows = [s for s in rows if session_failed(s)]
+    rows = rows[-args.limit:]
+    if args.json:
+        out = []
+        for s in rows:
+            frag = q.get(s["id"])
+            out.append({**s, "title": frag.front.get("title", "") if frag else ""})
+        print(json.dumps(out, indent=2))
+        return 0
     t = plain_table("Started", "Agent", "Fragment", "Outcome", "Exit", "Took", "Title")
-    for s in rows[-args.limit:]:
+    for s in rows:
         frag = q.get(s["id"])
         exit_cell = Text("")
         if s["exit"] is not None:
@@ -1214,8 +1323,16 @@ def cmd_runs_all(configs, args):
     if args.failed:
         rows = [row for row in rows if session_failed(row[2])]
     rows.sort(key=lambda row: row[2]["start"])
+    rows = rows[-args.limit:]
+    if args.json:
+        out = []
+        for project, q, s in rows:
+            frag = q.get(s["id"])
+            out.append({**s, "loop": project, "title": frag.front.get("title", "") if frag else ""})
+        print(json.dumps(out, indent=2))
+        return 0
     t = plain_table("Started", "Loop", "Agent", "Fragment", "Outcome", "Exit", "Took", "Title")
-    for project, q, s in rows[-args.limit:]:
+    for project, q, s in rows:
         frag = q.get(s["id"])
         exit_cell = Text("")
         if s["exit"] is not None:
@@ -1398,6 +1515,74 @@ def cmd_milestones(q, args):
     return 0
 
 
+def cycle_seconds(q):
+    """(tier, kind, seconds) for every done fragment still in the queue.
+
+    Reads only currently-visible fragments, so an archived one (`loopq
+    prune`) drops out of these figures too.
+    """
+    by_id = events_by_id(q)
+    out = []
+    for f in q.all("done"):
+        start = dt.datetime.fromisoformat(created_at(by_id, f))
+        end = dt.datetime.fromisoformat(done_at(by_id, f))
+        out.append((f.front.get("tier"), f.front.get("kind"), (end - start).total_seconds()))
+    return out
+
+
+def group_seconds(rows, key_index):
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[key_index], []).append(row[2])
+    return groups
+
+
+def session_seconds(rows):
+    """Durations of the sessions among `rows` that have ended."""
+    return [(dt.datetime.fromisoformat(x["end"]) - dt.datetime.fromisoformat(x["start"])).total_seconds()
+            for x in rows if x["end"]]
+
+
+def cmd_stats(q, args):
+    rows = cycle_seconds(q)
+    by_tier = {k: v for k, v in group_seconds(rows, 0).items() if k is not None}
+    by_kind = {k: v for k, v in group_seconds(rows, 1).items() if k is not None}
+    agents = {}
+    for s in sessions(q):
+        agents.setdefault(s["agent"], []).append(s)
+    agent_secs = {a: session_seconds(s) for a, s in agents.items()}
+    if args.json:
+        print(json.dumps({
+            "by_tier": {k: {"count": len(v), "median_seconds": statistics.median(v)}
+                        for k, v in by_tier.items()},
+            "by_kind": {k: {"count": len(v), "median_seconds": statistics.median(v)}
+                        for k, v in by_kind.items()},
+            "by_agent": {
+                a: {"sessions": len(s), "failed": sum(1 for x in s if session_failed(x)),
+                    "median_seconds": statistics.median(agent_secs[a]) if agent_secs[a] else None}
+                for a, s in agents.items()
+            },
+        }, indent=2))
+        return 0
+    c = console()
+    for title, groups in (("Cycle time by tier", by_tier), ("Cycle time by kind", by_kind)):
+        t = plain_table(title.rsplit(" ", 1)[-1].capitalize(), "Count", "Median")
+        for key, secs in sorted(groups.items()):
+            t.add_row(Text(key), str(len(secs)), format_span_secs(statistics.median(secs)))
+        c.print(Rule(Text(title, style="bold"), align="left"))
+        c.print(t if groups else Text("no done fragments yet", style="bright_black"))
+    c.print(Rule(Text("Agent throughput", style="bold"), align="left"))
+    t = plain_table("Agent", "Sessions", "Failed", "Success", "Median")
+    for agent, s in sorted(agents.items()):
+        secs = agent_secs[agent]
+        failed = sum(1 for x in s if session_failed(x))
+        rate = f"{round(100 * (len(s) - failed) / len(s))}%" if s else ""
+        median = format_span_secs(statistics.median(secs)) if secs else ""
+        t.add_row(agent, str(len(s)), Text(str(failed), style="red" if failed else ""), rate, median)
+    c.print(t if agents else Text("no sessions recorded", style="bright_black"))
+    return 0
+
+
 # operator actions -------------------------------------------------------
 
 def cmd_release(q, args):
@@ -1437,6 +1622,32 @@ def cmd_retry(q, args):
         frag.front.pop("assigned_to", None)
         release(frag)
         q.move(frag, "ready", "retried")
+    return 0
+
+
+def cmd_prune(q, args):
+    """Archive done fragments older than a duration. Never deletes: a moved
+    fragment can still be found under the queue's archive/ directory, and
+    `loopq history ID` keeps working since the event log is untouched."""
+    threshold = now() - parse_duration(args.older_than)
+    by_id = events_by_id(q)
+    candidates = [f for f in q.all("done")
+                  if dt.datetime.fromisoformat(done_at(by_id, f)) <= threshold]
+    c = console()
+    if not candidates:
+        c.print(Text("nothing to archive", style="bright_black"))
+        return 0
+    verb = "would archive" if args.dry_run else "archived"
+    with q.locked():
+        for f in candidates:
+            c.print(Text(f"{verb} {f.id}  {f.front.get('title', '')}"))
+            if not args.dry_run:
+                dest = q.root / "archive" / f.path.name
+                os.rename(f.path, dest)
+                q.event("archived", f.id, detail=str(dest))
+    noun = "fragment" if len(candidates) == 1 else "fragments"
+    c.print(Text(f"{len(candidates)} {noun} {'would be archived' if args.dry_run else 'archived'}",
+                 style="bold"))
     return 0
 
 
@@ -1727,7 +1938,9 @@ def default_loop(configs):
 def cmd_use(args, parser):
     """Show, save or clear the default loop."""
     path = saved_loop_path()
-    if args.clear:
+    if args.all and (args.clear or args.name):
+        parser.error("--all cannot be used with a loop name or --clear")
+    if args.clear or args.all:
         path.unlink(missing_ok=True)
         print("default loop cleared")
         return 0
@@ -1749,6 +1962,86 @@ def cmd_use(args, parser):
         return 0
     name, source = default_loop(configs)
     print(f"{name}\t({source})" if name else "no default loop; views cover every loop")
+    return 0
+
+
+def cmd_create(args):
+    """Write a starter config for the Git repository containing the cwd."""
+    root = git(Path.cwd(), "rev-parse", "--show-toplevel", check=False)
+    if root.returncode != 0:
+        print("loopq: create must run inside a Git repository", file=sys.stderr)
+        return 2
+    repo = Path(root.stdout.strip()).resolve()
+    project = args.project or repo.name
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", project):
+        print("loopq: project must use letters, digits, underscores or hyphens", file=sys.stderr)
+        return 2
+    path = (Path(args.path) if args.path else Path(args.config_dir) / f"{project}.yaml")
+    path = path.expanduser().resolve()
+    if path.exists():
+        print(f"loopq: {path} already exists", file=sys.stderr)
+        return 2
+    launchers = {
+        "claude": ["claude", "-p", "{prompt}"],
+        "codex": ["codex", "exec", "-s", "workspace-write", "{prompt}"],
+        "cursor-agent": ["cursor-agent", "-p", "--trust", "--sandbox", "enabled", "{prompt}"],
+        "opencode": ["opencode", "run", "{prompt}"],
+        "gemini": ["gemini", "-p", "{prompt}"],
+        "copilot": ["copilot", "-p", "{prompt}"],
+        "kiro-cli": ["kiro-cli", "chat", "--no-interactive", "{prompt}"],
+        "goose": None,
+        "amp": None,
+        "droid": None,
+        "crush": None,
+        "qwen": None,
+        "pi": None,
+    }
+    agents = {}
+    for binary, command_line in launchers.items():
+        if not shutil.which(binary):
+            continue
+        name = {"cursor-agent": "cursor", "kiro-cli": "kiro"}.get(binary, binary)
+        spec = {"worktree": str(repo.parent / f"{project}-loop-{name}"),
+                "tiers": ["judgement", "standard", "mechanical"],
+                "kinds": ["work", "review", "conflict", "decompose", "brief"]}
+        if command_line:
+            spec["command"] = command_line
+        agents[name] = spec
+    if not agents:
+        for name in ("author", "reviewer"):
+            agents[name] = {"worktree": str(repo.parent / f"{project}-loop-{name}"),
+                            "tiers": ["judgement", "standard", "mechanical"],
+                            "kinds": ["work", "review", "conflict", "decompose", "brief"]}
+    base = f"loop-{project}-base"
+    cfg = {"project": project, "prefix": project.lower(),
+           "base": base, "integration_worktree": str(repo.parent / f"{project}-loop-integration"),
+           "lease": "4h", "gate": ["git diff {base}...HEAD --check"], "agents": agents}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x") as output:
+            output.write("# Choose the starting commit before creating base and worktrees.\n"
+                         "# Review paths, agent roles, commands and gate before running the loop.\n")
+            yaml.safe_dump(cfg, output, sort_keys=False)
+    except FileExistsError:
+        print(f"loopq: {path} already exists", file=sys.stderr)
+        return 2
+    print(f"Created {path} with {len(agents)} agent entries: {', '.join(agents)}")
+    print("The base is a branch, not a directory. This command wrote only the config; "
+          "your current checkout and branch have not changed.")
+    print("Review the agent roles, launcher permissions, model choices, gate and worktree paths in the file.")
+    if len(agents) < 2:
+        print("Add a second agent identity for cross-agent review.")
+    print("Choose START_REF (for example main or HEAD). Only committed files at that ref enter the loop.")
+    print(f"From {repo}, after reviewing the paths, run:")
+    print(f"  git branch {shlex.quote(base)} START_REF")
+    for worktree in [cfg["integration_worktree"], *(spec["worktree"] for spec in agents.values())]:
+        print(f"  git worktree add --detach {shlex.quote(worktree)} {shlex.quote(base)}")
+    print("Create a detached worktree for every agent you add to the config too.")
+    print(f"Then run: loopq --loop {shlex.quote(project)} doctor")
+    print("The normal checkout can stay on main or a feature branch. loopq advances only its base branch; "
+          "merge that branch into your chosen branch when ready. See the README for parallel work.")
+    print(f"You can ask your coding agent: 'Define a loop for {repo} starting from {path}; "
+          "review the config and set up its branch and worktrees.'")
     return 0
 
 
@@ -1898,24 +2191,32 @@ HELP_GROUPS = (
     )),
     ("Inspect", (
         ("help", "help [COMMAND]", "Show the overview or detailed command help."),
+        ("version", "version", "Show the loopq version."),
         ("loops", "loops", "List discovered loops and config paths."),
-        ("use", "use [NAME | --clear]", "Show, save or clear the default loop."),
+        ("create", "create [PATH] [--project NAME]", "Write a starter loop config for this Git repository."),
+        ("use", "use [NAME | --all | --clear]", "Show, save or clear the default loop."),
         ("status", "status", "Show queue counts, claims, human items and cooldowns."),
+        ("list", "list [filters] [--json]",
+         "List every fragment, one line each, filtered and sorted by state."),
         ("milestones", "milestones", "Show progress and dependencies by milestone."),
+        ("stats", "stats [--json]", "Show cycle time by tier and kind, and agent throughput."),
         ("show", "show ID", "Show a fragment, its dependencies, commits and history."),
         ("history", "history ID", "Show every recorded transition of a fragment."),
         ("why", "why AGENT", "Explain why an agent is not taking work."),
-        ("runs", "runs [--agent A] [--failed]", "List agent sessions and outcomes."),
+        ("runs", "runs [--agent A] [--failed] [--json]", "List agent sessions and outcomes."),
         ("session", "session ID [--paths]", "Show session output or transcript paths."),
     )),
     ("Run the loop", (
         ("add", "add FILE", "Enqueue a fragment from a Markdown file."),
+        ("new", "new PATH [options]",
+         "Write a fragment template file for `add`."),
         ("tick", "tick --agent A [--manual]", "Collect a result and reserve the next fragment."),
         ("run", "run --agent A", "Tick, launch the agent command and collect its result."),
         ("dispatch", "dispatch [--dry-run]", "Drive scheduled agents across all loops."),
         ("release", "release ID", "Release a claim while keeping partial work."),
         ("handoff", "handoff ID [--to A]", "Move a stuck claim to another agent."),
         ("retry", "retry ID [--tier T]", "Return blocked work to the ready queue."),
+        ("prune", "prune [--older-than 30d] [--dry-run]", "Archive done fragments older than a duration."),
         ("pause", "pause", "Stop new claims while still collecting results."),
         ("resume", "resume", "Allow new claims again."),
         ("cooldown", "cooldown [--agent A]", "Show every agent's cooldown status, or set or clear one agent's cooldown."),
@@ -1942,7 +2243,7 @@ def print_overview_help():
         table.add_column(style="cyan", no_wrap=True)
         table.add_column()
         for _, syntax, summary in group:
-            table.add_row(syntax, summary)
+            table.add_row(Text(syntax), summary)
         c.print(table)
     c.print(Rule(Text("Selection and help", style="bold"), align="left"))
     options = Table.grid(padding=(0, 2))
@@ -1985,6 +2286,18 @@ def main(argv=None):
     tick.add_argument("--manual", action="store_true", help="print worktree and prompt for manual use")
     add = sub.add_parser("add", parents=[common], help=COMMAND_HELP["add"])
     add.add_argument("file", help="Markdown fragment file")
+    new = sub.add_parser("new", help=COMMAND_HELP["new"])
+    new.add_argument("path", metavar="PATH", help="file to write")
+    new.add_argument("--kind", choices=("work", "human"), default="work",
+                     help="fragment kind (default: work)")
+    new.add_argument("--title", default="", metavar="TEXT", help="fragment title")
+    new.add_argument("--tier", choices=("judgement", "standard", "mechanical"),
+                     help="required for kind work")
+    new.add_argument("--milestone", metavar="ID", help="attach to a milestone")
+    new.add_argument("--deps", metavar="ID,ID", help="comma-separated dependency ids")
+    create = sub.add_parser("create", parents=[common], help=COMMAND_HELP["create"])
+    create.add_argument("path", nargs="?", metavar="PATH", help="config file (default: CONFIG_DIR/PROJECT.yaml)")
+    create.add_argument("--project", metavar="NAME", help="loop name (default: repository name)")
     cool = sub.add_parser("cooldown", parents=[common], help=COMMAND_HELP["cooldown"])
     cool.add_argument("--agent", metavar="NAME", help="agent whose cooldown to inspect or change (default: show all agents)")
     cool.add_argument("--until", metavar="ISO", help="set cooldown end as an ISO timestamp")
@@ -1996,11 +2309,21 @@ def main(argv=None):
     mode.add_argument("--done", action="store_true", help="mark the human fragment complete")
     mode.add_argument("--requeue", action="store_true", help="return a blocked fragment to agents")
     sub.add_parser("status", parents=[common], help=COMMAND_HELP["status"])
+    lst = sub.add_parser("list", parents=[common], help=COMMAND_HELP["list"])
+    lst.add_argument("--state", choices=STATES, help="only this state")
+    lst.add_argument("--kind", choices=("work", "review", "conflict", "decompose", "brief", "human"),
+                     help="only this kind")
+    lst.add_argument("--tier", choices=("judgement", "standard", "mechanical"), help="only this tier")
+    lst.add_argument("--milestone", metavar="ID", help="only this milestone")
+    lst.add_argument("--agent", metavar="NAME", help="only claimed by this agent")
+    lst.add_argument("--json", action="store_true", help="print as JSON instead of a table")
     ack = sub.add_parser("ack", parents=[common], help=COMMAND_HELP["ack"])
     ack.add_argument("milestone", help="milestone ID")
     sub.add_parser("doctor", parents=[common], help=COMMAND_HELP["doctor"])
     sub.add_parser("todo", parents=[common], help=COMMAND_HELP["todo"])
     sub.add_parser("milestones", parents=[common], help=COMMAND_HELP["milestones"])
+    stats = sub.add_parser("stats", parents=[common], help=COMMAND_HELP["stats"])
+    stats.add_argument("--json", action="store_true", help="print as JSON instead of tables")
     for name in ("show", "history"):
         sub.add_parser(name, parents=[common], help=COMMAND_HELP[name]).add_argument("id", help="fragment ID")
     why = sub.add_parser("why", parents=[common], help=COMMAND_HELP["why"])
@@ -2009,6 +2332,7 @@ def main(argv=None):
     runs.add_argument("--agent", metavar="NAME", help="show only this agent")
     runs.add_argument("--failed", action="store_true", help="show only failed sessions")
     runs.add_argument("--limit", type=int, default=30, metavar="N", help="maximum rows (default 30)")
+    runs.add_argument("--json", action="store_true", help="print as JSON instead of a table")
     sess = sub.add_parser("session", parents=[common], help=COMMAND_HELP["session"])
     sess.add_argument("id", help="fragment ID")
     sess.add_argument("--paths", action="store_true", help="show transcript paths only")
@@ -2019,6 +2343,10 @@ def main(argv=None):
         if name == "retry":
             p.add_argument("--tier", choices=("judgement", "standard", "mechanical"),
                            help="move the fragment to another tier")
+    prune = sub.add_parser("prune", parents=[common], help=COMMAND_HELP["prune"])
+    prune.add_argument("--older-than", default="30d", metavar="DURATION",
+                       help="archive done fragments older than this (default 30d)")
+    prune.add_argument("--dry-run", action="store_true", help="preview without archiving")
     handoff = sub.add_parser("handoff", parents=[common], help=COMMAND_HELP["handoff"])
     handoff.add_argument("id", help="fragment ID")
     handoff.add_argument("--to", metavar="AGENT",
@@ -2032,6 +2360,7 @@ def main(argv=None):
                               help=COMMAND_HELP["dispatch"])
     dispatch.add_argument("--dry-run", action="store_true", help="show due actions without launching")
     sub.add_parser("loops", parents=[common], help=COMMAND_HELP["loops"])
+    sub.add_parser("version", help=COMMAND_HELP["version"])
     use = sub.add_parser("use", parents=[common], help=COMMAND_HELP["use"])
     use_mode = use.add_mutually_exclusive_group()
     use_mode.add_argument("name", nargs="?", help="project to use when no loop is selected")
@@ -2046,6 +2375,9 @@ def main(argv=None):
         if target is None:
             parser.error(f"unknown command {args.topic!r}; run `loopq help` to list commands")
         target.print_help()
+        return 0
+    if args.command == "version":
+        print(f"loopq {VERSION}")
         return 0
     args.config = getattr(args, "config", None)
     args.loop = getattr(args, "loop", None)
@@ -2066,6 +2398,10 @@ def main(argv=None):
         return int(bool(errors))
     if args.command == "use":
         return cmd_use(args, parser)
+    if args.command == "create":
+        return cmd_create(args)
+    if args.command == "new":
+        return cmd_new(args)
     if args.config and args.loop:
         parser.error("--config and --loop cannot be used together")
     if args.all and (args.config or args.loop):
@@ -2094,18 +2430,23 @@ def main(argv=None):
                 print(f"loopq: using loop {loop} ({source})", file=sys.stderr)
         elif len(configs) == 1:
             cfg = configs[0][1]
-        elif args.command in (None, "doctor", "status", "todo", "milestones", "runs") or \
+        elif args.command in (None, "doctor", "status", "todo", "milestones", "runs", "list") or \
                 (args.command == "cooldown" and not (args.until or args.clear)):
             for err in errors:
                 print(f"loopq: {err}", file=sys.stderr)
             if args.command == "runs":
                 return int(bool(errors) or cmd_runs_all(configs, args))
+            if args.command == "list" and args.json:
+                rows = [{"loop": found["project"], **row}
+                        for _, found in configs for row in list_rows(Queue(found), args)]
+                print(json.dumps(rows, indent=2))
+                return int(bool(errors))
             views = {None: cmd_doctor, "doctor": cmd_doctor, "status": cmd_status,
                      "todo": cmd_todo, "milestones": cmd_milestones,
-                     "cooldown": cmd_cooldown}
+                     "cooldown": cmd_cooldown, "list": cmd_list}
             results = []
             for _, found in configs:
-                if args.command in ("todo", "milestones", "cooldown"):
+                if args.command in ("todo", "milestones", "cooldown", "list"):
                     console().print(Rule(Text(f"loopq · {found['project']}", style="bold"), align="left"))
                 results.append(views[args.command](Queue(found), args))
             return int(bool(errors) or any(results))
@@ -2137,7 +2478,7 @@ def main(argv=None):
                 "show": cmd_show, "history": cmd_history, "why": cmd_why,
                 "runs": cmd_runs, "session": cmd_session, "release": cmd_release,
                 "retry": cmd_retry, "handoff": cmd_handoff, "pause": cmd_pause, "resume": cmd_resume,
-                "run": cmd_run}
+                "run": cmd_run, "list": cmd_list, "stats": cmd_stats, "prune": cmd_prune}
     return commands[args.command or "doctor"](q, args)
 
 

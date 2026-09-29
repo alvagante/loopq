@@ -8,22 +8,33 @@ This example runs two agent identities with your existing agent harness against
 an existing Git repository. The harness can be Codex, Claude Code, or another
 tool that can work in a chosen directory. loopq does not install anything into
 the harness: it prepares a worktree and a task file, then collects a result
-file. Use a clean project checkout. Run the Git setup commands from that
-project's root, not from the loopq checkout.
+file. Run the Git setup commands from the project's checkout, not from the
+loopq checkout. Your checkout can remain on its own branch, including a human
+feature branch. The loop uses committed files from the start ref you choose;
+uncommitted work in your checkout stays there.
+
+For a generated config, run `loopq create` now. Review its agent roles,
+commands, gate and paths, choose the starting ref, then run the Git commands
+it prints. Its base is named `loop-PROJECT-base`. Verify with `loopq loops`
+and `loopq --loop PROJECT doctor`, then continue at [Add work](#3-add-work).
+The numbered setup steps below show the manual alternative using `loop-base`.
 
 ## 1. Create a base branch and worktrees
 
 ```sh
-git branch loop-base
+git branch loop-base main
 git worktree add --detach ../project-loop-author loop-base
 git worktree add --detach ../project-loop-reviewer loop-base
 git worktree add --detach ../project-loop-integration loop-base
 ```
 
-Replace `project` in the worktree paths with a suitable name. The `loop-base`
+This starts the loop from the current local `main` commit. Use another branch,
+tag or commit instead if that is the intended starting point. Replace
+`project` in the worktree paths with a suitable name. The `loop-base`
 branch must stay unchecked out: loopq moves it after review. The integration
 worktree is for loopq, not an agent. Each agent needs its own worktree. The
-original checkout can stay on its current branch.
+original checkout can stay on its current branch. Worktrees share Git history,
+but have separate working files. None of these commands merge into `main`.
 
 ## 2. Register the project loop
 
@@ -138,7 +149,30 @@ exit 1 means nothing was assigned (check `loopq doctor` or `loopq why author`
 for the reason). Exit 2 means the tick was
 refused. An approved review moves
 `loop-base`, not your original branch. Merge or cherry-pick from `loop-base`
-into your normal branch when you decide to adopt the work.
+into your normal branch when you decide to adopt the work. Merging keeps the
+loop history connected to your delivery branch; cherry-picking copies selected
+commits and needs more care if you later merge the whole loop branch.
+
+## Keeping the loop current
+
+The loop base does not follow `main` automatically. If `main` has moved and
+the next fragments need those commits, merge it into the base between agent
+sessions. Run these from the project checkout after confirming no loop agent
+is active:
+
+```sh
+git -C ../project-loop-integration switch loop-base
+git -C ../project-loop-integration merge main
+git -C ../project-loop-integration switch --detach
+```
+
+Resolve any merge conflict in the integration worktree before detaching.
+`loopq doctor` reports the base as checked out and ticks refuse work until
+you detach it. After this merge, loopq integrates reviewed fragment branches
+against the updated base. Your normal checkout and `main` remain where they
+were. To deliver the loop's changes, merge `loop-base` into the branch used
+for your PR or release. If several loops share the repository, give each a
+distinct base and separate worktrees, then integrate their bases separately.
 
 For unattended sessions, set `agents.NAME.command` to a harness CLI invocation
 that accepts the `{prompt}` argument, then run

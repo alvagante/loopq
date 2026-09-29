@@ -19,7 +19,9 @@ Git, uv, and Python 3.11 or newer.
 
 Inspect the current branch and HEAD, Git status and worktrees, existing loopq
 configs, `LOOPQ_CONFIG_DIR` and `LOOPQ_HOME`, installed commands, and available
-agent harnesses. Keep discovery read-only.
+agent harnesses. Check whether other loops use this Git repository and whether
+`main` or another delivery branch is moving independently. Keep discovery
+read-only.
 
 Ask the user for the roles they want, the model and harness available for each
 role, and whether each agent runs manually, through a headless command, or
@@ -28,15 +30,20 @@ or handle briefs, and which tiers they should accept. Explain that review
 needs a second agent identity and an author cannot review its own work. Ask
 whether scheduling is wanted; if so, collect cadence, time zone, and launcher
 preference. Clarify the starting commit when the checkout is dirty or the
-intended base is unclear. Bundle these questions into one concise message.
+intended base is unclear. Ask which branch should eventually receive the
+loop's results. Bundle these questions into one concise message.
 
 ## Propose the setup
 
 Show a reviewable plan with the exact installation steps if needed, local base
 branch, one detached worktree per agent identity, one integration worktree,
 their absolute paths, and the Git commands. Keep the base branch unchecked
-out. Reuse a valid existing setup and preserve conflicting paths for the user
-to decide.
+out. Name the base and worktrees distinctly from any other loop in this
+repository. Show the selected start ref explicitly, since uncommitted edits
+are not included. Explain that the user's current checkout and branch stay
+in place, the loop advances its base after review, and the user merges that
+base into a delivery branch when ready. Reuse a valid existing setup and
+preserve conflicting paths for the user to decide.
 
 Show the full proposed YAML before writing it. Put it in `LOOPQ_CONFIG_DIR`
 (default `~/.config/loopq/loops.d/`), outside agent worktrees. Include a

@@ -6,7 +6,7 @@ import sys
 
 import yaml
 
-from conftest import LOOPQ
+from conftest import LOOPQ, git
 
 
 def invoke(loop, config_dir, *args, extra_env=None, cwd=None):
@@ -61,6 +61,18 @@ def test_saved_default_loop_selects_and_narrows_views(loop):
     everything = invoke(loop, config_dir, "status", "--all")
     assert "loopq · demo" in everything.stdout and "loopq · other" in everything.stdout
     assert invoke(loop, config_dir, "status", "--all", "--loop", "demo").returncode == 2
+
+    switched = invoke(loop, config_dir, "use", "--all")
+    assert switched.returncode == 0, switched.stderr
+    assert "no default loop" in invoke(loop, config_dir, "use").stdout
+    for name in ("other-int", "other-a", "other-b"):
+        git(loop.repo, "worktree", "add", "-q", "--detach", str(loop.tmp / name), "tools")
+    every_loop = invoke(loop, config_dir)
+    assert "loopq · demo" in every_loop.stdout and "loopq · other" in every_loop.stdout
+    assert "using loop" not in every_loop.stderr
+    assert invoke(loop, config_dir, "use", "other").returncode == 0
+    assert invoke(loop, config_dir, "use", "other", "--all").returncode == 2
+    assert invoke(loop, config_dir, "use").stdout.strip() == "other\t(loopq use)"
 
     (loop.home / ".current-loop").write_text("gone\n")
     stale = invoke(loop, config_dir, "status")

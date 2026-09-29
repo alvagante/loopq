@@ -31,9 +31,11 @@ the first of these that is set:
 
 A default loop acts like `--loop`, including for `doctor`, `status` and other
 views, and loopq prints `using loop PROJECT (source)` on standard error.
-`loopq use` shows the default and its source; `loopq use --clear` removes the
-saved one. Pass `--all` to ignore the default for one command. `dispatch`
-always scans every loop.
+`loopq use` shows the default and its source; `loopq use --all` or
+`loopq use --clear` removes the saved one. Pass `--all` to a view command to
+ignore the default for that invocation. `LOOPQ_LOOP` and the current directory
+still take precedence after clearing a saved loop. `dispatch` always scans
+every loop.
 
 ## Operator tasks
 
@@ -50,14 +52,18 @@ always scans every loop.
 | Command | Purpose |
 | --- | --- |
 | `help [COMMAND]` | Show the overview or detailed help for one command. |
+| `version` | Print the loopq version without loading a loop config. |
 | `loops` | List discovered projects and config paths. |
-| `use [PROJECT \| --clear]` | Show the default loop and its source, save one, or clear the saved one. |
+| `create [PATH] [--project NAME]` | Write a starter config for the current Git checkout and print proposed branch and worktree commands. Detect agent binaries on `PATH`; review paths, roles, commands and gate before use. Refuses to overwrite a file. |
+| `use [PROJECT \| --all \| --clear]` | Show the default loop and its source, save one, or clear the saved one. |
 | `status` | Show queue counts, claims, human items, cooldowns, and unread briefs. |
+| `list [--state STATE] [--kind KIND] [--tier TIER] [--milestone ID] [--agent NAME] [--json]` | List fragments across the selected loop or all loops. JSON includes the loop name when showing all loops. |
 | `milestones` | Show progress and dependencies for each milestone. |
+| `stats [--json]` | Show cycle times by tier and kind, plus agent throughput for the selected loop. |
 | `show ID` | Show a fragment, dependency states, commits, and history. |
 | `history ID` | Show every recorded transition of a fragment. |
 | `why AGENT` | Explain why an agent took no work, including eligibility of ready fragments. |
-| `runs [--agent NAME] [--failed] [--limit N]` | List agent sessions and outcomes. Default limit: 30. |
+| `runs [--agent NAME] [--failed] [--limit N] [--json]` | List agent sessions and outcomes. Default limit: 30. |
 | `session ID [--paths]` | Show captured run output or matching harness transcripts; `--paths` lists transcript paths. |
 
 ## Run the loop
@@ -65,12 +71,14 @@ always scans every loop.
 | Command | Purpose |
 | --- | --- |
 | `add FILE` | Enqueue a Markdown fragment. `kind: human` enters the human queue. |
+| `new PATH --title TEXT [--kind work\|human] [--tier TIER] [--milestone ID] [--deps ID,ID]` | Write a fragment template for `add`. Work fragments require `--tier`. |
 | `tick --agent NAME [--manual]` | Collect this agent's result, then reserve its next fragment. `--manual` prints the worktree and prompt. Exit 0 means work reserved, 1 means none, 2 means refused. |
 | `run --agent NAME` | Tick, launch the agent's configured `command` in its worktree, capture output under `logs/runs/`, and collect the result. A failed run without a result keeps partial work, requeues the fragment, and cools down the agent. |
 | `dispatch [--dry-run]` | Check schedules across all configs and launch command agents or matching Orca automations. Return without waiting for sessions. `--dry-run` previews due actions. |
 | `release ID [--note TEXT]` | Release a claim now. Collect an available result, or keep partial work and requeue without a cooldown. |
 | `handoff ID [--to AGENT] [--note TEXT]` | Move a claim from an agent stuck on usage limits. Stop its `loopq run` session, keep partial work on the fragment branch, cool the agent down, and requeue the fragment for `--to AGENT` only (default: any eligible agent). A finished result is collected instead. Without a claim, `--to` redirects a ready fragment. |
 | `retry ID [--note TEXT] [--tier TIER]` | Return blocked or failed work to the ready queue with attempts reset. Tier choices: `judgement`, `standard`, `mechanical`. Close operator steps with `resolve --done`. |
+| `prune [--older-than DURATION] [--dry-run]` | Archive old done fragments. Default age: 30 days. Preview before archiving. |
 | `pause` | Stop new claims while still collecting finished results. |
 | `resume` | Allow new claims again. |
 | `cooldown [--agent NAME [--until ISO\|--clear]]` | Without `--agent`, show every agent as cooling down or available. With it, show, set, or clear that agent's cooldown. |

@@ -2,6 +2,31 @@
 
 Notable user-visible changes are recorded here.
 
+## [0.3.0] - 2026-09-29
+
+### Added
+
+- `version` prints the loopq version without requiring a loop config.
+- Docker image and release workflow for versioned GHCR and Docker Hub images.
+- `create` writes a starter loop config and prints the branch and worktree
+  commands needed to finish setup.
+- `new` writes a work or human fragment template for `add`.
+- `list` filters fragments by state, kind, tier, milestone or agent, with JSON
+  output; `runs` also supports JSON output.
+- `stats` reports cycle times and agent throughput.
+- `prune` archives completed fragments after an age threshold, with a dry-run
+  preview.
+
+### Fixed
+
+- `loopq use --all` now clears the saved loop so later views cover all loops
+  when no environment or directory selector takes precedence.
+
+### Documentation
+
+- Expanded setup and parallel worktree guidance, Docker usage, and common
+  operator commands in the README and references.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added

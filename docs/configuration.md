@@ -17,12 +17,29 @@ every loop. Pass `--config FILE` or set
 `--config-dir DIR` changes the discovery directory.
 
 The [quickstart](quickstart.md) contains a complete manual example.
+Run `loopq create` from a Git checkout to write a starter config at
+`LOOPQ_CONFIG_DIR/PROJECT.yaml` (default `~/.config/loopq/loops.d/PROJECT.yaml`).
+Use `--project NAME` or pass a config path to override those defaults. The
+command detects Claude Code, Codex, Cursor Agent, OpenCode, Gemini CLI,
+GitHub Copilot CLI, Kiro CLI, Goose, Amp, Droid, Crush, Qwen, and Pi binaries
+on `PATH`. It adds documented headless commands where available and leaves
+other detected agents manual. If none are found,
+it adds manual `author` and `reviewer` entries. Review the generated commands,
+model choices, agent roles, gate and paths. Create the base branch and detached
+worktrees before running the loop. The generated base is
+`loop-PROJECT-base`, which avoids a shared branch name when several loops use
+one repository. Its prefix starts as the project name; shorten it if useful,
+but keep prefixes distinct across loops so fragment IDs are unambiguous.
+The config generator prints setup commands but does not run
+them. Choose their `START_REF` deliberately: `main` uses its current local
+commit, while `HEAD` uses the current checkout's commit. Working tree edits
+are not part of either ref.
 
 | Key | Meaning |
 |---|---|
 | `project` | Queue directory name under `LOOPQ_HOME` (default `~/.loops`). |
 | `prefix` | Generated fragment ID prefix, for example `ex-0001`. |
-| `base` | Local branch loopq integrates approved work into; leave it unchecked out. |
+| `base` | Local branch loopq integrates approved work into; leave it unchecked out. It does not track `main` automatically. |
 | `integration_worktree` | Dedicated Git worktree for integration. |
 | `agents.NAME.worktree` | Dedicated Git worktree for this agent. |
 | `agents.NAME.model` | Optional model identifier. `tick --manual` prints it, and `{model}` in `command` expands to it. External harnesses must select the model themselves. |
@@ -33,6 +50,10 @@ The [quickstart](quickstart.md) contains a complete manual example.
 At least two agent identities are needed for cross-agent review. An agent
 cannot review work it authored. loopq does not create worktrees or check your
 base branch out for you. Agent worktrees must be clean when taking work.
+Your normal checkout may stay on `main` or a feature branch. To bring loop
+results into that branch, merge the base yourself. See
+[the parallel work example](../README.md#work-alongside-other-branches) and
+[the sync procedure](quickstart.md#keeping-the-loop-current).
 
 Optional settings:
 
