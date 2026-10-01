@@ -764,6 +764,13 @@ def integrate(q, target):
         failure = run_gate(cfg, iw)
         new = git(iw, "rev-parse", "HEAD").stdout.strip()
         git(iw, "checkout", "-q", "--detach")
+        if new == old:
+            # The rebase produced no delta: every branch commit was already
+            # on the base (squash-merged, cherry-picked, or emptied). A gate
+            # over an empty diff would only reject the no-op.
+            target.note(f"branch adds nothing to {base}; nothing to integrate")
+            q.move(target, "done", "integrated", detail=old[:12])
+            return
         if failure:
             send_back(q, target, f"gate failed after rebase onto {base}:\n{failure}", why="gate-failed")
             return

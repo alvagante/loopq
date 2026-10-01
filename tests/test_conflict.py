@@ -70,3 +70,38 @@ def test_conflict_resolved_out_of_band_integrates_as_a_noop(loop):
     assert loop.state_of(conflict) == "done"
     subjects = git(loop.repo, "log", "--format=%s", "tools").stdout.splitlines()
     assert subjects[0] == "merge edit app"
+
+
+def test_conflict_squash_merged_out_of_band_integrates_as_a_noop(loop):
+    # Same out-of-band resolution, but by squash merge: the change is on the
+    # base with no shared ancestry, so the containment pre-check misses it and
+    # only the empty rebase reveals the no-op. Integration must still land the
+    # target instead of re-running the gate over an empty diff.
+    fid = loop.add(title="edit app")
+    loop.tick("a")
+    (loop.wt("a") / "app.txt").write_text("line from work\n")
+    loop.write_result("a", commit="feat: edit app")
+    loop.tick("a")
+    move_base(loop, "app.txt", "line from base\n", "base edits app")
+    loop.tick("b")
+    loop.write_result("b", verdict="approve")
+
+    loop.tick("b")  # integration conflicts; b takes the conflict fragment
+
+    conflict = [i for i in loop.ids_in("claimed") if loop.fragment(i)[0]["kind"] == "conflict"][0]
+    # Out of band: the operator clears the conflict markers in the integration
+    # worktree and squash-commits the branch's change onto the base.
+    iw = loop.wt("int")
+    git(iw, "checkout", "-q", "tools")
+    (iw / "app.txt").write_text("line from base\nline from work\n")
+    git(iw, "add", "-A")
+    git(iw, "commit", "-q", "-m", "squash edit app")
+    git(iw, "checkout", "-q", "--detach")
+
+    resolve_conflict(loop, "line from base\nline from work\n")
+    loop.tick("b")
+
+    assert loop.state_of(fid) == "done"
+    assert loop.state_of(conflict) == "done"
+    subjects = git(loop.repo, "log", "--format=%s", "tools").stdout.splitlines()
+    assert subjects[0] == "squash edit app"

@@ -9,7 +9,9 @@ Notable user-visible changes are recorded here.
 - Integration now treats a fragment branch already contained in the base as
   integrated (a no-op) instead of rebasing to an empty commit and re-running
   the gate, which churned conflict fragments whenever the work had already
-  landed on the base out of band.
+  landed on the base out of band. A rebase that ends on the base commit
+  unchanged (for example after a squash merge with no shared ancestry) is
+  likewise integrated instead of failing the gate over an empty diff.
 
 ## [0.3.0] - 2026-09-29
 
