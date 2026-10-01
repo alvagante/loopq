@@ -739,6 +739,13 @@ def integrate(q, target):
     branch = target.front["branch"]
     for _ in range(3):
         old = git(iw, "rev-parse", base).stdout.strip()
+        if git(iw, "merge-base", "--is-ancestor", branch, base, check=False).returncode == 0:
+            # Already contained: nothing on the branch is missing from the
+            # base, so rebasing would be empty and re-running the gate would
+            # be noise. Treat it as integrated where it stands.
+            target.note(f"already contained in {base}; nothing to integrate")
+            q.move(target, "done", "integrated", detail=old[:12])
+            return
         git(iw, "checkout", "-q", branch)
         if git(iw, "rebase", "-q", base, check=False).returncode != 0:
             git(iw, "rebase", "--abort", check=False)

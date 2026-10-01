@@ -2,6 +2,15 @@
 
 Notable user-visible changes are recorded here.
 
+## Unreleased
+
+### Fixed
+
+- Integration now treats a fragment branch already contained in the base as
+  integrated (a no-op) instead of rebasing to an empty commit and re-running
+  the gate, which churned conflict fragments whenever the work had already
+  landed on the base out of band.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added
