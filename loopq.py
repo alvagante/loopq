@@ -290,7 +290,7 @@ def clear_loop_dir(worktree):
     d = loop_dir(worktree)
     if d.exists():
         for p in sorted(d.rglob("*"), reverse=True):
-            p.unlink() if p.is_file() else p.rmdir()
+            p.unlink() if p.is_file() or p.is_symlink() else p.rmdir()
         d.rmdir()
 
 
