@@ -33,7 +33,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 STATES = ("ready", "claimed", "review", "human", "done")
 KIND_ORDER = ("conflict", "review", "work", "decompose", "brief")
 

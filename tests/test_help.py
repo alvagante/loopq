@@ -53,5 +53,5 @@ def test_version_works_without_a_config():
     result = cli("version")
 
     assert result.returncode == 0
-    assert result.stdout == "loopq 0.3.0\n"
+    assert result.stdout == "loopq 0.3.1\n"
     assert result.stderr == ""

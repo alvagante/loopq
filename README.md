@@ -61,7 +61,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
 ```
 
 The release workflow publishes versioned images to
-`ghcr.io/example42/loopq` and `DOCKERHUB_USERNAME/loopq` when a version tag
+`ghcr.io/alvagante/loopq` and `DOCKERHUB_USERNAME/loopq` when a version tag
 is pushed. Commands that run agents also need their binaries and access to
 the configured worktrees inside the container.
 

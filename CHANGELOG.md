@@ -2,10 +2,14 @@
 
 Notable user-visible changes are recorded here.
 
-## Unreleased
+## [0.3.1] - 2026-10-14
 
 ### Fixed
 
+- Clearing the loop directory now unlinks symlinks instead of following them.
+- The release workflow publishes to `ghcr.io/<repository owner>/loopq` instead
+  of a hardcoded `example42` owner, which the repository token could not push
+  to and which failed the 0.3.0 image build.
 - Integration now treats a fragment branch already contained in the base as
   integrated (a no-op) instead of rebasing to an empty commit and re-running
   the gate, which churned conflict fragments whenever the work had already

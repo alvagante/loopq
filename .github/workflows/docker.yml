@@ -7,6 +7,7 @@ on:
 
 env:
   IMAGE_NAME: loopq
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/loopq
 
 jobs:
   docker:
@@ -40,7 +41,7 @@ jobs:
         with:
           images: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
-            ghcr.io/example42/loopq
+            ${{ env.GHCR_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -61,4 +62,4 @@ jobs:
       - name: Smoke test
         run: |
           docker run --rm \
-            ghcr.io/example42/loopq:${{ steps.meta.outputs.version }} --help >/dev/null
+            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }} --help >/dev/null
